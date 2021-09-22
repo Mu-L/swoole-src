@@ -31,6 +31,8 @@ class ProcessManager
      */
     protected $atomic;
     protected $alone = false;
+    protected $onlyChild = false;
+    protected $onlyParent = false;
     protected $freePorts = [];
     protected $randomFunc = 'get_safe_random';
     protected $randomData = [[]];
@@ -50,6 +52,7 @@ class ProcessManager
     protected $childStatus = 255;
     protected $expectExitSignal = [0, SIGTERM];
     protected $parentFirst = false;
+    protected $killed = false;
     /**
      * @var Process
      */
@@ -238,7 +241,8 @@ class ProcessManager
         if (!defined('PCNTL_ESRCH')) {
             define('PCNTL_ESRCH', 3);
         }
-        if (!$this->alone && $this->childPid) {
+        if (!$this->alone and !$this->killed and $this->childPid) {
+            $this->killed = true;
             if ($force || (!@Process::kill($this->childPid) && swoole_errno() !== PCNTL_ESRCH)) {
                 if (!@Process::kill($this->childPid, SIGKILL) && swoole_errno() !== PCNTL_ESRCH) {
                     exit('KILL CHILD PROCESS ERROR');
@@ -269,14 +273,23 @@ class ProcessManager
             $this->alone = true;
             $this->initFreePorts();
             if ($argv[1] == 'child') {
-                return $this->runChildFunc();
+                $this->onlyChild = true;
             } elseif ($argv[1] == 'parent') {
-                return $this->runParentFunc();
+                $this->onlyParent = true;
             } else {
                 throw new RuntimeException("bad parameter \$1\n");
             }
         }
         $this->initFreePorts();
+        if ($this->alone) {
+            if ($this->onlyChild) {
+                return $this->runChildFunc();
+            } elseif ($this->onlyParent) {
+                return $this->runParentFunc();
+            }
+            $this->alone = false;
+        }
+
         $this->childProcess = new Process(function () {
             if ($this->parentFirst) {
                 $this->wait();

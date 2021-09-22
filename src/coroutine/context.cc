@@ -15,8 +15,12 @@
 */
 
 #include "swoole_coroutine_context.h"
-#if __linux__
+
+#ifdef SW_CONTEXT_PROTECT_STACK_PAGE
 #include <sys/mman.h>
+#if !defined(MAP_ANONYMOUS) && defined(MAP_ANON)
+#define MAP_ANONYMOUS MAP_ANON
+#endif
 #endif
 
 #ifndef SW_USE_THREAD_CONTEXT
@@ -24,27 +28,29 @@
 #define MAGIC_STRING "swoole_coroutine#5652a7fb2b38be"
 #define START_OFFSET (64 * 1024)
 
-#if !defined(MAP_ANONYMOUS) && defined(MAP_ANON)
-#define MAP_ANONYMOUS MAP_ANON
-#endif
-
 namespace swoole {
 namespace coroutine {
 
-Context::Context(size_t stack_size, const coroutine_func_t &fn, void *private_data)
+Context::Context(size_t stack_size, const CoroutineFunc &fn, void *private_data)
     : fn_(fn), stack_size_(stack_size), private_data_(private_data) {
     end_ = false;
 
 #ifdef SW_CONTEXT_PROTECT_STACK_PAGE
-    stack_ = (char *) ::mmap(0, stack_size_, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    int mapflags = MAP_PRIVATE | MAP_ANONYMOUS;
+#ifdef __OpenBSD__
+    // no-op for Linux and NetBSD, not to enable on FreeBSD as the semantic differs.
+    // However necessary on OpenBSD.
+    mapflags |= MAP_STACK;
+#endif
+    stack_ = (char *) ::mmap(0, stack_size_, PROT_READ | PROT_WRITE, mapflags, -1, 0);
 #else
     stack_ = (char *) sw_malloc(stack_size_);
 #endif
     if (!stack_) {
-        swFatalError(SW_ERROR_MALLOC_FAIL, "failed to malloc stack memory.");
+        swoole_fatal_error(SW_ERROR_MALLOC_FAIL, "failed to malloc stack memory.");
         exit(254);
     }
-    swTraceLog(SW_TRACE_COROUTINE, "alloc stack: size=%u, ptr=%p", stack_size_, stack_);
+    swoole_trace_log(SW_TRACE_COROUTINE, "alloc stack: size=%u, ptr=%p", stack_size_, stack_);
 
     void *sp = (void *) ((char *) stack_ + stack_size_);
 #ifdef USE_VALGRIND
@@ -81,7 +87,7 @@ Context::Context(size_t stack_size, const coroutine_func_t &fn, void *private_da
 
 Context::~Context() {
     if (stack_) {
-        swTraceLog(SW_TRACE_COROUTINE, "free stack: ptr=%p", stack_);
+        swoole_trace_log(SW_TRACE_COROUTINE, "free stack: ptr=%p", stack_);
 #ifdef USE_VALGRIND
         VALGRIND_STACK_DEREGISTER(valgrind_stack_id);
 #endif

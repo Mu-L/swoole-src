@@ -15,11 +15,7 @@
 */
 
 #include "php_swoole_cxx.h"
-#include "php_streams.h"
-#include "php_network.h"
-
-#include "ext/standard/file.h"
-#include "ext/standard/basic_functions.h"
+#include "swoole_socket.h"
 
 #include <string>
 #include <vector>
@@ -33,7 +29,7 @@ using swoole::Timer;
 using swoole::coroutine::Socket;
 
 struct DNSCacheEntity {
-    char address[16];
+    char address[INET6_ADDRSTRLEN];
     time_t update_time;
 };
 
@@ -43,6 +39,27 @@ void php_swoole_async_coro_rshutdown() {
     for (auto i = request_cache_map.begin(); i != request_cache_map.end(); i++) {
         efree(i->second);
     }
+}
+
+void php_swoole_set_aio_option(HashTable *vht) {
+    zval *ztmp;
+    /* AIO */
+   if (php_swoole_array_get_value(vht, "aio_core_worker_num", ztmp)) {
+       zend_long v = zval_get_long(ztmp);
+       v = SW_MAX(1, SW_MIN(v, UINT32_MAX));
+       SwooleG.aio_core_worker_num = v;
+   }
+   if (php_swoole_array_get_value(vht, "aio_worker_num", ztmp)) {
+       zend_long v = zval_get_long(ztmp);
+       v = SW_MAX(1, SW_MIN(v, UINT32_MAX));
+       SwooleG.aio_worker_num = v;
+   }
+   if (php_swoole_array_get_value(vht, "aio_max_wait_time", ztmp)) {
+       SwooleG.aio_max_wait_time = zval_get_double(ztmp);
+   }
+   if (php_swoole_array_get_value(vht, "aio_max_idle_time", ztmp)) {
+       SwooleG.aio_max_idle_time = zval_get_double(ztmp);
+   }
 }
 
 PHP_FUNCTION(swoole_async_set) {
@@ -62,6 +79,7 @@ PHP_FUNCTION(swoole_async_set) {
     vht = Z_ARRVAL_P(zset);
 
     php_swoole_set_global_option(vht);
+    php_swoole_set_aio_option(vht);
 
     if (php_swoole_array_get_value(vht, "enable_signalfd", ztmp)) {
         SwooleG.enable_signalfd = zval_is_true(ztmp);
@@ -101,8 +119,9 @@ PHP_FUNCTION(swoole_async_dns_lookup_coro) {
     Coroutine::get_current_safe();
 
     zval *domain;
+    long type = AF_INET;
     double timeout = swoole::network::Socket::default_dns_timeout;
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "z|d", &domain, &timeout) == FAILURE) {
+    if (zend_parse_parameters(ZEND_NUM_ARGS(), "z|dl", &domain, &timeout, &type) == FAILURE) {
         RETURN_FALSE;
     }
 
@@ -129,7 +148,7 @@ PHP_FUNCTION(swoole_async_dns_lookup_coro) {
 
     php_swoole_check_reactor();
 
-    vector<string> result = swoole::coroutine::dns_lookup(Z_STRVAL_P(domain), timeout);
+    vector<string> result = swoole::coroutine::dns_lookup(Z_STRVAL_P(domain), type, timeout);
     if (result.empty()) {
         swoole_set_last_error(SW_ERROR_DNSLOOKUP_RESOLVE_FAILED);
         RETURN_FALSE;

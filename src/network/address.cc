@@ -16,10 +16,6 @@
 
 #include "swoole_socket.h"
 
-#include <netdb.h>
-#include <assert.h>
-#include <memory>
-
 namespace swoole {
 namespace network {
 
@@ -27,7 +23,9 @@ static thread_local char tmp_address[INET6_ADDRSTRLEN];
 
 const char *Address::get_addr() {
     if (type == SW_SOCK_TCP || type == SW_SOCK_UDP) {
-        return inet_ntoa(addr.inet_v4.sin_addr);
+        if (inet_ntop(AF_INET, &addr.inet_v4.sin_addr, tmp_address, sizeof(tmp_address))) {
+            return tmp_address;
+        }
     } else if (type == SW_SOCK_TCP6 || type == SW_SOCK_UDP6) {
         if (inet_ntop(AF_INET6, &addr.inet_v6.sin6_addr, tmp_address, sizeof(tmp_address))) {
             return tmp_address;
@@ -48,7 +46,7 @@ int Address::get_port() {
     }
 }
 
-bool Address::assign(enum swSocket_type _type, const std::string &_host, int _port) {
+bool Address::assign(SocketType _type, const std::string &_host, int _port) {
     type = _type;
     const char *host = _host.c_str();
     if (_type == SW_SOCK_TCP || _type == SW_SOCK_UDP) {

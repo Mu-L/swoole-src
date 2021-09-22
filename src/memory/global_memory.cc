@@ -16,15 +16,13 @@
 
 #include "swoole.h"
 #include "swoole_memory.h"
+
 #include <vector>
-#include <list>
 #include <mutex>
 
 #define SW_MIN_PAGE_SIZE 4096
 
 namespace swoole {
-
-struct MemoryBlock;
 
 struct GlobalMemoryImpl {
     bool shared;
@@ -41,6 +39,7 @@ struct GlobalMemoryImpl {
 
 struct MemoryBlock {
     uint32_t size;
+    uint32_t reserved;
     char memory[0];
 };
 
@@ -85,7 +84,7 @@ void *GlobalMemory::alloc(uint32_t size) {
     std::unique_lock<std::mutex> lock(impl->lock);
 
     if (alloc_size > impl->pagesize) {
-        swWarn("failed to alloc %d bytes, exceed the maximum size[%d]", size, impl->pagesize);
+        swoole_warning("failed to alloc %d bytes, exceed the maximum size[%d]", size, impl->pagesize);
         return nullptr;
     }
 
@@ -94,17 +93,17 @@ void *GlobalMemory::alloc(uint32_t size) {
         impl = new GlobalMemoryImpl(old_impl->pagesize, old_impl->shared);
     }
 
-    swTrace("alloc_size=%u, size=%u", alloc_size, size);
+    swoole_trace("alloc_size=%u, size=%u", alloc_size, size);
 
     if (impl->alloc_offset + alloc_size > impl->pagesize) {
         char *page = impl->new_page();
         if (page == nullptr) {
-            swWarn("alloc memory error");
+            swoole_warning("alloc memory error");
             return nullptr;
         }
     }
 
-    block = (MemoryBlock *) impl->pages.back() + impl->alloc_offset;
+    block = (MemoryBlock *) (impl->pages.back() + impl->alloc_offset);
     impl->alloc_offset += alloc_size;
 
     block->size = size;
@@ -119,6 +118,14 @@ void GlobalMemory::destroy() {
     for (auto page : impl->pages) {
         impl->shared ? ::sw_shm_free(page) : ::sw_free(page);
     }
+}
+
+size_t GlobalMemory::capacity() {
+    return impl->pagesize - impl->alloc_offset;
+}
+
+size_t GlobalMemory::get_memory_size() {
+    return impl->pagesize * impl->pages.size();
 }
 
 GlobalMemory::~GlobalMemory() {

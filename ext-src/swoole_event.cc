@@ -241,7 +241,7 @@ int php_swoole_reactor_init() {
         }
     }
     if (!sw_reactor()) {
-        swTraceLog(SW_TRACE_PHP, "init reactor");
+        swoole_trace_log(SW_TRACE_PHP, "init reactor");
 
         if (swoole_event_init(SW_EVENTLOOP_WAIT_EXIT) < 0) {
             php_swoole_fatal_error(E_ERROR, "Unable to create event-loop reactor");
@@ -260,28 +260,15 @@ int php_swoole_reactor_init() {
 }
 
 void php_swoole_event_wait() {
-    if (PG(last_error_message)) {
-        switch (PG(last_error_type)) {
-        case E_ERROR:
-        case E_CORE_ERROR:
-        case E_USER_ERROR:
-        case E_COMPILE_ERROR:
-            return;
-        default:
-            break;
-        }
-    }
-
-    if (!sw_reactor()) {
+    if (php_swoole_is_fatal_error() || !sw_reactor()) {
         return;
     }
-
 #ifdef HAVE_SIGNALFD
     if (sw_reactor()->check_signalfd) {
-        swSignalfd_setup(sw_reactor());
+        swoole_signalfd_setup(sw_reactor());
     }
 #endif
-    if (!sw_reactor()->if_exit()) {
+    if (!sw_reactor()->if_exit() && !sw_reactor()->bailout) {
         // Don't disable object slot reuse while running shutdown functions:
         // https://github.com/php/php-src/commit/bd6eabd6591ae5a7c9ad75dfbe7cc575fa907eac
 #if defined(EG_FLAGS_IN_SHUTDOWN) && !defined(EG_FLAGS_OBJECT_STORE_NO_REUSE)
@@ -468,7 +455,7 @@ static PHP_FUNCTION(swoole_event_add) {
 
     int socket_fd = php_swoole_convert_to_fd(zfd);
     if (socket_fd < 0) {
-        php_swoole_fatal_error(E_WARNING, "unknow fd type");
+        php_swoole_fatal_error(E_WARNING, "unknown fd type");
         RETURN_FALSE;
     }
     if (socket_fd == 0 && (events & SW_EVENT_WRITE)) {
@@ -510,7 +497,7 @@ static PHP_FUNCTION(swoole_event_add) {
 
     if (swoole_event_add(socket, events) < 0) {
         php_swoole_fatal_error(E_WARNING, "swoole_event_add failed");
-        efree(socket);
+        socket->free();
         event_object_free(peo);
         RETURN_FALSE;
     }
@@ -536,7 +523,7 @@ static PHP_FUNCTION(swoole_event_write) {
 
     int socket_fd = php_swoole_convert_to_fd(zfd);
     if (socket_fd < 0) {
-        php_swoole_fatal_error(E_WARNING, "unknow type");
+        php_swoole_fatal_error(E_WARNING, "unknown type");
         RETURN_FALSE;
     }
 
@@ -577,7 +564,7 @@ static PHP_FUNCTION(swoole_event_set) {
 
     int socket_fd = php_swoole_convert_to_fd(zfd);
     if (socket_fd < 0) {
-        php_swoole_fatal_error(E_WARNING, "unknow type");
+        php_swoole_fatal_error(E_WARNING, "unknown type");
         RETURN_FALSE;
     }
 
@@ -592,12 +579,14 @@ static PHP_FUNCTION(swoole_event_set) {
         if (reactor_fd->fci_cache_read.function_handler) {
             sw_zend_fci_cache_discard(&reactor_fd->fci_cache_read);
         }
+        sw_zend_fci_cache_persist(&fci_cache_read);
         reactor_fd->fci_cache_read = fci_cache_read;
     }
     if (fci_write.size != 0) {
         if (reactor_fd->fci_cache_write.function_handler) {
             sw_zend_fci_cache_discard(&reactor_fd->fci_cache_write);
         }
+        sw_zend_fci_cache_persist(&fci_cache_write);
         reactor_fd->fci_cache_write = fci_cache_write;
     }
 
@@ -633,7 +622,7 @@ static PHP_FUNCTION(swoole_event_del) {
 
     int socket_fd = php_swoole_convert_to_fd(zfd);
     if (socket_fd < 0) {
-        php_swoole_fatal_error(E_WARNING, "unknow type");
+        php_swoole_fatal_error(E_WARNING, "unknown type");
         RETURN_FALSE;
     }
 
@@ -735,7 +724,10 @@ static PHP_FUNCTION(swoole_event_rshutdown) {
         if (!sw_reactor()) {
             return;
         }
-        php_swoole_fatal_error(E_DEPRECATED, "Event::wait() in shutdown function is deprecated");
+        // when throw Exception, do not show the info
+        if (!sw_reactor()->bailout) {
+            php_swoole_fatal_error(E_DEPRECATED, "Event::wait() in shutdown function is deprecated");
+        }
         php_swoole_event_wait();
     }
     zend_end_try();
@@ -749,7 +741,7 @@ static PHP_FUNCTION(swoole_event_dispatch) {
 
 #ifdef HAVE_SIGNALFD
     if (sw_reactor()->check_signalfd) {
-        swSignalfd_setup(sw_reactor());
+        swoole_signalfd_setup(sw_reactor());
     }
 #endif
 
@@ -775,7 +767,7 @@ static PHP_FUNCTION(swoole_event_isset) {
 
     int socket_fd = php_swoole_convert_to_fd(zfd);
     if (socket_fd < 0) {
-        php_swoole_fatal_error(E_WARNING, "unknow type");
+        php_swoole_fatal_error(E_WARNING, "unknown type");
         RETURN_FALSE;
     }
 

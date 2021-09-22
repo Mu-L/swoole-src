@@ -18,8 +18,10 @@
 */
 
 #include "test_core.h"
+
 #include "httplib_client.h"
 #include "llhttp.h"
+#include "swoole_server.h"
 #include "swoole_file.h"
 #include "swoole_http.h"
 
@@ -39,7 +41,7 @@ struct http_context {
         response_headers[key] = value;
     }
 
-    void response(enum swHttp_status_code code, string body) {
+    void response(enum swHttpStatusCode code, string body) {
         response_headers["Content-Length"] = to_string(body.length());
         response(code);
         server->send(fd, body.c_str(), body.length());
@@ -47,7 +49,7 @@ struct http_context {
 
     void response(int code) {
         swString *buf = swoole::make_string(1024);
-        buf->length = sw_snprintf(buf->str, buf->size, "HTTP/1.1 %s\r\n", swHttp_get_status_message(code));
+        buf->length = sw_snprintf(buf->str, buf->size, "HTTP/1.1 %s\r\n", http_server::get_status_message(code));
         for (auto &kv : response_headers) {
             buf->append(kv.first.c_str(), kv.first.length());
             buf->append(SW_STRL(": "));
@@ -98,7 +100,7 @@ static void test_run_server(function<void(swServer *)> fn) {
 
     swListenPort *port = serv.add_port(SW_SOCK_TCP, TEST_HOST, 0);
     if (!port) {
-        swWarn("listen failed, [error=%d]", swoole_get_last_error());
+        swoole_warning("listen failed, [error=%d]", swoole_get_last_error());
         exit(2);
     }
     port->open_http_protocol = 1;
@@ -115,11 +117,11 @@ static void test_run_server(function<void(swServer *)> fn) {
         SessionId session_id = req->info.fd;
         auto conn = serv->get_connection_by_session_id(session_id);
 
-        if (conn->websocket_status == WEBSOCKET_STATUS_ACTIVE) {
+        if (conn->websocket_status == swoole::websocket::STATUS_ACTIVE) {
             sw_tg_buffer()->clear();
             std::string resp = "Swoole: " + string(req->data, req->info.len);
-            swWebSocket_encode(
-                sw_tg_buffer(), resp.c_str(), resp.length(), WEBSOCKET_OPCODE_TEXT, SW_WEBSOCKET_FLAG_FIN);
+            swoole::websocket::encode(
+                sw_tg_buffer(), resp.c_str(), resp.length(), swoole::websocket::OPCODE_TEXT, swoole::websocket::FLAG_FIN);
             serv->send(session_id, sw_tg_buffer()->str, sw_tg_buffer()->length);
             return SW_OK;
         }
@@ -149,7 +151,7 @@ static void test_run_server(function<void(swServer *)> fn) {
 
             ctx.response(SW_HTTP_SWITCHING_PROTOCOLS);
 
-            conn->websocket_status = WEBSOCKET_STATUS_ACTIVE;
+            conn->websocket_status = swoole::websocket::STATUS_ACTIVE;
 
             return SW_OK;
         }
@@ -173,7 +175,7 @@ static void test_run_server(function<void(swServer *)> fn) {
 
 TEST(http_server, get) {
     test_run_server([](swServer *serv) {
-        swSignal_none();
+        swoole_signal_block_all();
 
         auto port = serv->get_primary_port();
 
@@ -188,7 +190,7 @@ TEST(http_server, get) {
 
 TEST(http_server, post) {
     test_run_server([](swServer *serv) {
-        swSignal_none();
+        swoole_signal_block_all();
 
         auto port = serv->get_primary_port();
 
@@ -206,7 +208,7 @@ TEST(http_server, post) {
 
 TEST(http_server, static_get) {
     test_run_server([](swServer *serv) {
-        swSignal_none();
+        swoole_signal_block_all();
 
         auto port = serv->get_primary_port();
 
@@ -239,19 +241,19 @@ static void websocket_test(int server_port, const char *data, size_t length) {
 
 TEST(http_server, websocket_small) {
     test_run_server([](swServer *serv) {
-        swSignal_none();
-        websocket_test(serv->get_primary_port()->port, SW_STRL("hello world, swoole is best!"));
+        swoole_signal_block_all();
+        websocket_test(serv->get_primary_port()->get_port(), SW_STRL("hello world, swoole is best!"));
         kill(getpid(), SIGTERM);
     });
 }
 
 TEST(http_server, websocket_medium) {
     test_run_server([](swServer *serv) {
-        swSignal_none();
+        swoole_signal_block_all();
 
         swString str(8192);
         str.repeat("A", 1, 8192);
-        websocket_test(serv->get_primary_port()->port, str.value(), str.get_length());
+        websocket_test(serv->get_primary_port()->get_port(), str.value(), str.get_length());
 
         kill(getpid(), SIGTERM);
     });
@@ -259,11 +261,11 @@ TEST(http_server, websocket_medium) {
 
 TEST(http_server, websocket_big) {
     test_run_server([](swServer *serv) {
-        swSignal_none();
+        swoole_signal_block_all();
 
         swString str(128 * 1024);
         str.repeat("A", 1, str.capacity() - 1);
-        websocket_test(serv->get_primary_port()->port, str.value(), str.get_length());
+        websocket_test(serv->get_primary_port()->get_port(), str.value(), str.get_length());
 
         kill(getpid(), SIGTERM);
     });

@@ -39,6 +39,7 @@ $files = [
     'core/Coroutine/Server.php',
     'core/Coroutine/Server/Connection.php',
     'core/Coroutine/Barrier.php',
+    'core/Coroutine/Http/functions.php',
     # <core for connection pool> #
     'core/ConnectionPool.php',
     'core/Database/ObjectProxy.php',
@@ -96,7 +97,15 @@ $files = [
     'alias_ns.php',
 ];
 
+$ignore_files = ['vendor_init.php',];
+
 $diff_files = array_diff(swoole_library_files(), $files);
+foreach ($diff_files as $k => $f) {
+    if (in_array($f, $ignore_files)) {
+        unset($diff_files[$k]);
+    }
+}
+
 if (!empty($diff_files)) {
     swoole_error('Some files are not loaded: ', ...$diff_files);
 }
@@ -144,7 +153,7 @@ $content = <<<C
 
 {$source_str}
 
-static void php_swoole_load_library()
+void php_swoole_load_library()
 {
 {$eval_str}
 }

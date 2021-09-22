@@ -1,6 +1,7 @@
 #include "test_coroutine.h"
 
 using namespace swoole;
+using swoole::coroutine::System;
 
 TEST(coroutine_base, create) {
     long _cid;
@@ -21,6 +22,15 @@ TEST(coroutine_base, get_current) {
 
     ASSERT_GT(cid, 0);
     ASSERT_EQ(cid, _cid);
+}
+
+TEST(coroutine_base, get_init_msec) {
+    Coroutine::create([](void *arg) {
+        auto co = Coroutine::get_current();
+        long init_msec = co->get_init_msec();
+
+        ASSERT_GT(init_msec, 0);
+    });
 }
 
 TEST(coroutine_base, yield_resume) {
@@ -149,4 +159,43 @@ TEST(coroutine_base, count) {
 TEST(coroutine_base, get_peak_num) {
     Coroutine::create(
         [](void *_arg) { Coroutine::create([](void *_arg) { ASSERT_GE(Coroutine::get_peak_num(), 2); }); });
+}
+
+TEST(coroutine_base, get_elapsed) {
+    long elapsed_time = 0;
+    Coroutine::create(
+        [](void *arg) {
+            auto co = Coroutine::get_current();
+            usleep(2000);
+            *(long *) arg = Coroutine::get_elapsed(co->get_cid());
+        },
+        &elapsed_time);
+    ASSERT_GE(elapsed_time, 2);
+}
+
+TEST(coroutine_base, run) {
+    long cid = coroutine::run([](void *ptr){
+
+    });
+    ASSERT_GE(cid, 1);
+}
+
+TEST(coroutine_base, cancel) {
+    coroutine::run([](void *arg) {
+        auto co = Coroutine::get_current_safe();
+        Coroutine::create([co](void *){
+            System::sleep(0.002);
+            co->cancel();
+        });
+        ASSERT_EQ(co->yield_ex(-1), false);
+        ASSERT_EQ(co->is_canceled(), true);
+    });
+}
+
+TEST(coroutine_base, timeout) {
+    coroutine::run([](void *arg) {
+        auto co = Coroutine::get_current_safe();
+        ASSERT_EQ(co->yield_ex(0.005), false);
+        ASSERT_EQ(co->is_timedout(), true);
+    });
 }

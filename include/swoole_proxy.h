@@ -20,10 +20,22 @@
 
 #define SW_SOCKS5_VERSION_CODE 0x05
 
-enum swHttp_proxy_state {
+enum swHttpProxyState {
     SW_HTTP_PROXY_STATE_WAIT = 0,
     SW_HTTP_PROXY_STATE_HANDSHAKE,
     SW_HTTP_PROXY_STATE_READY,
+};
+
+enum swSocks5State {
+    SW_SOCKS5_STATE_WAIT = 0,
+    SW_SOCKS5_STATE_HANDSHAKE,
+    SW_SOCKS5_STATE_AUTH,
+    SW_SOCKS5_STATE_CONNECT,
+    SW_SOCKS5_STATE_READY,
+};
+
+enum swSocks5Method {
+    SW_SOCKS5_METHOD_AUTH = 0x02,
 };
 
 namespace swoole {
@@ -37,6 +49,8 @@ struct HttpProxy {
     std::string target_host;
     int target_port;
     char buf[512];
+
+    std::string get_auth_str();
 };
 
 struct Socks5Proxy {
@@ -60,17 +74,4 @@ struct Socks5Proxy {
         buf[2] = method;
     }
 };
-}
-
-enum swSocks5_state {
-    SW_SOCKS5_STATE_WAIT = 0,
-    SW_SOCKS5_STATE_HANDSHAKE,
-    SW_SOCKS5_STATE_AUTH,
-    SW_SOCKS5_STATE_CONNECT,
-    SW_SOCKS5_STATE_READY,
-};
-
-enum swSocks5_method {
-    SW_SOCKS5_METHOD_AUTH = 0x02,
-};
-
+}  // namespace swoole

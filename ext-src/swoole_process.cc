@@ -15,10 +15,8 @@
 */
 
 #include "php_swoole_cxx.h"
-#include "php_streams.h"
-#include "php_network.h"
-
 #include "php_swoole_process.h"
+
 #include "swoole_server.h"
 #include "swoole_msg_queue.h"
 #include "swoole_signal.h"
@@ -43,7 +41,7 @@ static sw_inline ProcessObject *php_swoole_process_fetch_object(zend_object *obj
     return (ProcessObject *) ((char *) obj - swoole_process_handlers.offset);
 }
 
-static sw_inline Worker *php_swoole_process_get_worker(zval *zobject) {
+Worker *php_swoole_process_get_worker(zval *zobject) {
     return php_swoole_process_fetch_object(Z_OBJ_P(zobject))->worker;
 }
 
@@ -260,7 +258,7 @@ static const zend_function_entry swoole_process_methods[] =
 
 void php_swoole_process_minit(int module_number) {
     SW_INIT_CLASS_ENTRY(swoole_process, "Swoole\\Process", "swoole_process", nullptr, swoole_process_methods);
-    SW_SET_CLASS_SERIALIZABLE(swoole_process, zend_class_serialize_deny, zend_class_unserialize_deny);
+    SW_SET_CLASS_NOT_SERIALIZABLE(swoole_process);
     SW_SET_CLASS_CLONEABLE(swoole_process, sw_zend_class_clone_deny);
     SW_SET_CLASS_UNSET_PROPERTY_HANDLER(swoole_process, sw_zend_class_unset_property_deny);
     SW_SET_CLASS_CUSTOM_OBJECT(
@@ -347,7 +345,7 @@ static PHP_METHOD(swoole_process, __construct) {
         RETURN_FALSE;
     }
 
-    if (SwooleTG.aio_init) {
+    if (SwooleTG.async_threads) {
         php_swoole_fatal_error(E_ERROR, "unable to create %s with async-io threads", SW_Z_OBJCE_NAME_VAL_P(ZEND_THIS));
         RETURN_FALSE;
     }
@@ -369,7 +367,7 @@ static PHP_METHOD(swoole_process, __construct) {
 
     uint32_t base = 1;
     if (sw_server() && sw_server()->is_started()) {
-        base = sw_server()->worker_num + sw_server()->task_worker_num + sw_server()->user_worker_num;
+        base = sw_server()->worker_num + sw_server()->task_worker_num + sw_server()->get_user_worker_num();
     }
     if (php_swoole_worker_round_id == 0) {
         php_swoole_worker_round_id = base;
@@ -417,24 +415,18 @@ static PHP_METHOD(swoole_process, __construct) {
 static PHP_METHOD(swoole_process, __destruct) {}
 
 static PHP_METHOD(swoole_process, wait) {
-    int status;
     zend_bool blocking = 1;
 
     if (zend_parse_parameters(ZEND_NUM_ARGS(), "|b", &blocking) == FAILURE) {
         RETURN_FALSE;
     }
 
-    int options = 0;
-    if (!blocking) {
-        options |= WNOHANG;
-    }
-
-    pid_t pid = swoole_waitpid(-1, &status, options);
-    if (pid > 0) {
+    auto exit_status = swoole::wait_process(-1, blocking ? 0 : WNOHANG);
+    if (exit_status.get_pid() > 0) {
         array_init(return_value);
-        add_assoc_long(return_value, "pid", pid);
-        add_assoc_long(return_value, "code", WEXITSTATUS(status));
-        add_assoc_long(return_value, "signal", WTERMSIG(status));
+        add_assoc_long(return_value, "pid", exit_status.get_pid());
+        add_assoc_long(return_value, "code", exit_status.get_code());
+        add_assoc_long(return_value, "signal", exit_status.get_signal());
     } else {
         RETURN_FALSE;
     }
@@ -514,7 +506,7 @@ static PHP_METHOD(swoole_process, kill) {
     int ret = swoole_kill((int) pid, (int) sig);
     if (ret < 0) {
         if (!(sig == 0 && errno == ESRCH)) {
-            php_swoole_sys_error(E_WARNING, "swKill(%d, %d) failed", (int) pid, (int) sig);
+            php_swoole_sys_error(E_WARNING, "kill(%d, %d) failed", (int) pid, (int) sig);
         }
         RETURN_FALSE;
     }
@@ -542,10 +534,7 @@ static PHP_METHOD(swoole_process, signal) {
         RETURN_FALSE;
     }
 
-    php_swoole_check_reactor();
-
-    swSignalHandler handler = swSignal_get_handler(signo);
-
+    swSignalHandler handler = swoole_signal_get_handler(signo);
     if (handler && handler != php_swoole_onSignal) {
         php_swoole_fatal_error(
             E_WARNING, "signal [" ZEND_LONG_FMT "] processor has been registered by the system", signo);
@@ -555,7 +544,7 @@ static PHP_METHOD(swoole_process, signal) {
     if (zcallback == nullptr) {
         fci_cache = signal_fci_caches[signo];
         if (fci_cache) {
-            swSignal_set(signo, nullptr);
+            swoole_signal_set(signo, nullptr);
             signal_fci_caches[signo] = nullptr;
             swoole_event_defer(sw_zend_fci_cache_free, fci_cache);
             SwooleTG.signal_listener_num--;
@@ -580,11 +569,23 @@ static PHP_METHOD(swoole_process, signal) {
         handler = php_swoole_onSignal;
     }
 
+    if (sw_server() && sw_server()->is_sync_process()) {
+        if (signal_fci_caches[signo]) {
+            sw_zend_fci_cache_free(signal_fci_caches[signo]);
+        } else {
+            SwooleTG.signal_listener_num++;
+        }
+        signal_fci_caches[signo] = fci_cache;
+        swoole_signal_set(signo, handler);
+        RETURN_TRUE;
+    }
+
+    php_swoole_check_reactor();
     // for swSignalfd_setup
     SwooleTG.reactor->check_signalfd = true;
     if (!SwooleTG.reactor->isset_exit_condition(Reactor::EXIT_CONDITION_SIGNAL_LISTENER)) {
         SwooleTG.reactor->set_exit_condition(Reactor::EXIT_CONDITION_SIGNAL_LISTENER,
-                                             [](Reactor *reactor, int &event_num) -> bool {
+                                             [](Reactor *reactor, size_t &event_num) -> bool {
                                                  return SwooleTG.signal_listener_num == 0 or !SwooleG.wait_signal;
                                              });
     }
@@ -600,7 +601,7 @@ static PHP_METHOD(swoole_process, signal) {
     // use user settings
     SwooleG.use_signalfd = SwooleG.enable_signalfd;
 
-    swSignal_set(signo, handler);
+    swoole_signal_set(signo, handler);
 
     RETURN_TRUE;
 }
@@ -657,7 +658,7 @@ static void php_swoole_onSignal(int signo) {
 
     if (fci_cache) {
         zval argv[1];
-        ZVAL_LONG(& argv[0], signo);
+        ZVAL_LONG(&argv[0], signo);
 
         if (UNEXPECTED(!zend::function::call(fci_cache, 1, argv, nullptr, php_swoole_is_enable_coroutine()))) {
             php_swoole_fatal_error(
@@ -792,7 +793,7 @@ static PHP_METHOD(swoole_process, read) {
 
     zend_string *buf = zend_string_alloc(buf_size, 0);
     ssize_t ret = process->pipe_current->read(buf->val, buf_size);
-    
+
     if (ret < 0) {
         efree(buf);
         if (errno != EINTR) {
@@ -997,7 +998,7 @@ static PHP_METHOD(swoole_process, daemon) {
                 int new_fd = php_swoole_convert_to_fd(elem);
                 if (new_fd >= 0) {
                     if (dup2(new_fd, fd) < 0) {
-                        swSysWarn("dup2(%d, %d) failed", new_fd, fd);
+                        swoole_sys_warning("dup2(%d, %d) failed", new_fd, fd);
                     }
                 }
             }

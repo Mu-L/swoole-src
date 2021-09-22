@@ -17,8 +17,6 @@
 #include "swoole_pipe.h"
 #include "swoole_socket.h"
 
-#include <memory>
-
 namespace swoole {
 using network::Socket;
 
@@ -42,7 +40,7 @@ bool SocketPair::init_socket(int master_fd, int worker_fd) {
 
 Pipe::Pipe(bool _blocking) : SocketPair(_blocking) {
     if (pipe(socks) < 0) {
-        swSysWarn("pipe() failed");
+        swoole_sys_warning("pipe() failed");
         return;
     }
     if (!init_socket(socks[1], socks[0])) {
@@ -91,12 +89,12 @@ bool SocketPair::close(int which) {
 }
 
 SocketPair::~SocketPair() {
-    if (!master_socket) {
+    if (master_socket) {
         close(SW_PIPE_CLOSE_MASTER);
     }
-    if (!worker_socket) {
+    if (worker_socket) {
         close(SW_PIPE_CLOSE_WORKER);
     }
 }
 
-}
+}  // namespace swoole

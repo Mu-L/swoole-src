@@ -15,15 +15,12 @@
 */
 
 #include <sys/file.h>
-#include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <netdb.h>
 #include <poll.h>
 #include <dirent.h>
 
-#include <string>
-#include <iostream>
 #include <mutex>
 #include <unordered_map>
 
@@ -191,6 +188,25 @@ int swoole_coroutine_open(const char *pathname, int flags, mode_t mode) {
     return ret;
 }
 
+int swoole_coroutine_socket_create(int fd) {
+    if (sw_unlikely(is_no_coro())) {
+        return -1;
+    }
+    Socket *socket = new Socket(fd, SW_SOCK_RAW);
+    int _fd = socket->get_fd();
+    if (sw_unlikely(_fd < 0)) {
+        delete socket;
+    } else {
+        std::unique_lock<std::mutex> _lock(socket_map_lock);
+        socket_map[fd] = socket;
+    }
+    return 0;
+}
+
+uint8_t swoole_coroutine_socket_exists(int fd) {
+    return socket_map.find(fd) != socket_map.end();
+}
+
 ssize_t swoole_coroutine_read(int sockfd, void *buf, size_t count) {
     if (sw_unlikely(is_no_coro())) {
         return read(sockfd, buf, count);
@@ -311,6 +327,96 @@ int swoole_coroutine_access(const char *pathname, int mode) {
     return retval;
 }
 
+FILE *swoole_coroutine_fopen(const char *pathname, const char *mode) {
+    if (sw_unlikely(is_no_coro())) {
+        return fopen(pathname, mode);
+    }
+
+    FILE *retval = nullptr;
+    swoole::coroutine::async([&]() { retval = fopen(pathname, mode); });
+    return retval;
+}
+
+FILE *swoole_coroutine_fdopen(int fd, const char *mode) {
+    if (sw_unlikely(is_no_coro())) {
+        return fdopen(fd, mode);
+    }
+
+    FILE *retval = nullptr;
+    swoole::coroutine::async([&]() { retval = fdopen(fd, mode); });
+    return retval;
+}
+
+FILE *swoole_coroutine_freopen(const char *pathname, const char *mode, FILE *stream) {
+    if (sw_unlikely(is_no_coro())) {
+        return freopen(pathname, mode, stream);
+    }
+
+    FILE *retval = nullptr;
+    swoole::coroutine::async([&]() { retval = freopen(pathname, mode, stream); });
+    return retval;
+}
+
+size_t swoole_coroutine_fread(void *ptr, size_t size, size_t nmemb, FILE *stream) {
+    if (sw_unlikely(is_no_coro())) {
+        return fread(ptr, size, nmemb, stream);
+    }
+
+    size_t retval = 0;
+    swoole::coroutine::async([&]() { retval = fread(ptr, size, nmemb, stream); });
+    return retval;
+}
+
+size_t swoole_coroutine_fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream) {
+    if (sw_unlikely(is_no_coro())) {
+        return fwrite(ptr, size, nmemb, stream);
+    }
+
+    size_t retval = 0;
+    swoole::coroutine::async([&]() { retval = fwrite(ptr, size, nmemb, stream); });
+    return retval;
+}
+
+char *swoole_coroutine_fgets(char *s, int size, FILE *stream) {
+    if (sw_unlikely(is_no_coro())) {
+        return fgets(s, size, stream);
+    }
+
+    char *retval = nullptr;
+    swoole::coroutine::async([&]() { retval = fgets(s, size, stream); });
+    return retval; 
+}
+
+int swoole_coroutine_fputs(const char *s, FILE *stream) {
+    if (sw_unlikely(is_no_coro())) {
+        return fputs(s, stream);
+    }
+
+    int retval = -1;
+    swoole::coroutine::async([&]() { retval = fputs(s, stream); });
+    return retval; 
+}
+
+int swoole_coroutine_feof(FILE *stream) {
+    if (sw_unlikely(is_no_coro())) {
+        return feof(stream);
+    }
+
+    int retval = -1;
+    swoole::coroutine::async([&]() { retval = feof(stream); });
+    return retval;
+}
+
+int swoole_coroutine_fclose(FILE *stream) {
+    if (sw_unlikely(is_no_coro())) {
+        return fclose(stream);
+    }
+
+    int retval = -1;
+    swoole::coroutine::async([&]() { retval = fclose(stream); });
+    return retval;
+}
+
 int swoole_coroutine_flock(int fd, int operation) {
     if (sw_unlikely(is_no_coro())) {
         return flock(fd, operation);
@@ -381,6 +487,16 @@ int swoole_coroutine_socket_set_timeout(int sockfd, int which, double timeout) {
     }
 }
 
+int swoole_coroutine_socket_set_connect_timeout(int sockfd, double timeout) {
+    Socket *socket = get_socket_ex(sockfd);
+    if (sw_unlikely(socket == NULL)) {
+        errno = EINVAL;
+        return -1;
+    }
+    socket->set_timeout(timeout, Socket::TIMEOUT_DNS | Socket::TIMEOUT_CONNECT);
+    return 0;
+}
+
 int swoole_coroutine_socket_wait_event(int sockfd, int event, double timeout) {
     Socket *socket = get_socket_ex(sockfd);
     if (sw_unlikely(socket == NULL)) {
@@ -389,7 +505,7 @@ int swoole_coroutine_socket_wait_event(int sockfd, int event, double timeout) {
     }
     double ori_timeout = socket->get_timeout(event == SW_EVENT_READ ? Socket::TIMEOUT_READ : Socket::TIMEOUT_WRITE);
     socket->set_timeout(timeout);
-    bool retval = socket->poll((enum swEvent_type) event);
+    bool retval = socket->poll((enum swEventType) event);
     socket->set_timeout(ori_timeout);
     return retval ? SW_OK : SW_ERR;
 }

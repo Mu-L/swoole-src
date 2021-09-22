@@ -40,14 +40,18 @@ Mutex::Mutex(int flags) : Lock() {
     pthread_mutexattr_init(&impl->attr_);
 
     if (flags & PROCESS_SHARED) {
+#ifdef HAVE_PTHREAD_MUTEXATTR_SETPSHARED
         pthread_mutexattr_setpshared(&impl->attr_, PTHREAD_PROCESS_SHARED);
+#else
+        swoole_warning("PTHREAD_MUTEX_PSHARED is not supported");
+#endif
     }
 
     if (flags & ROBUST) {
 #ifdef HAVE_PTHREAD_MUTEXATTR_SETROBUST
         pthread_mutexattr_setrobust(&impl->attr_, PTHREAD_MUTEX_ROBUST);
 #else
-        swWarn("PTHREAD_MUTEX_ROBUST is not supported");
+        swoole_warning("PTHREAD_MUTEX_ROBUST is not supported");
 #endif
     }
 

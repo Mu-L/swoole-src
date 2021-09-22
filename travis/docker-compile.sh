@@ -9,8 +9,6 @@ fi
 
 #-----------compile------------
 #-------print error only-------
-apt update -y
-apt install -y libcurl4-openssl-dev
 cd "${__DIR__}" && cd ../ && \
 ./clear.sh > /dev/null && \
 phpize --clean > /dev/null && \
@@ -20,12 +18,14 @@ phpize > /dev/null && \
 --enable-http2 \
 --enable-sockets \
 --enable-mysqlnd \
---enable-gconv \
 --enable-swoole-json \
 --enable-swoole-curl \
+--enable-cares \
 > /dev/null && \
 make -j8 > /dev/null | tee /tmp/compile.log && \
 (test "`cat /tmp/compile.log`"x = ""x || exit 255) && \
 make install && echo "" && \
 docker-php-ext-enable swoole && \
+php --ri curl && \
 php --ri swoole
+

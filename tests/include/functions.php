@@ -19,6 +19,10 @@ function clear_php()
     `ps -A | grep php | grep -v phpstorm | grep -v 'run-tests' | awk '{print $1}' | xargs kill -9 > /dev/null 2>&1`;
 }
 
+function puts($msg) {
+    echo $msg."\n";
+}
+
 function top(int $pid)
 {
     static $available;
@@ -761,4 +765,37 @@ function dump_to_file($file, $data)
         fwrite($fp, $l . "\n");
     }
     fclose($fp);
+}
+
+function curl_type_assert($ch, $resource_type, $class_type)
+{
+    if (PHP_VERSION_ID >= 80000) {
+        Assert::isInstanceOf($ch, $class_type);
+    } else {
+        Assert::eq(get_resource_type($ch), $resource_type);
+    }
+}
+
+function swoole_get_variance($avg, $array, $is_swatch = false)
+{
+    $count = count($array);
+    if ($count == 1 && $is_swatch == true) {
+        return false;
+    } elseif ($count > 0) {
+        $total_var = 0;
+        foreach ($array as $lv) {
+            $total_var += pow(($lv - $avg), 2);
+        }
+        if ($count == 1 && $is_swatch == true) {
+            return false;
+        }
+        return $is_swatch ? sqrt($total_var / (count($array) - 1)) : sqrt($total_var / count($array));
+    } else {
+        return false;
+    }
+}
+
+function swoole_get_average($array)
+{
+    return array_sum($array) / count($array);
 }

@@ -26,7 +26,9 @@
 using swLock = swoole::Lock;
 
 using swoole::RWLock;
+#ifdef HAVE_SPINLOCK
 using swoole::SpinLock;
+#endif
 using swoole::Mutex;
 
 static void test_func(swLock &lock) {
@@ -105,7 +107,7 @@ TEST(lock, shared) {
         int status;
         pid_t _pid = waitpid(pid, &status, 0);
         if (_pid != pid ) {
-            swWarn("error pid=%d", _pid);
+            swoole_warning("error pid=%d", _pid);
         }
         ASSERT_EQ(*_num, magic_num);
     }

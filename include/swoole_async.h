@@ -20,17 +20,19 @@
 
 #include <vector>
 #include <string>
+#include <mutex>
+#include <atomic>
 
 #ifndef O_DIRECT
 #define O_DIRECT 040000
 #endif
 
-enum flag {
+namespace swoole {
+
+enum AsyncFlag {
     SW_AIO_WRITE_FSYNC = 1u << 1,
     SW_AIO_EOF = 1u << 2,
 };
-
-namespace swoole {
 
 struct AsyncEvent {
     int fd;
@@ -48,7 +50,7 @@ struct AsyncEvent {
     /**
      * output
      */
-    ssize_t ret;
+    ssize_t retval;
     int error;
     /**
      * internal use only
@@ -58,6 +60,35 @@ struct AsyncEvent {
     void *object;
     void (*handler)(AsyncEvent *event);
     void (*callback)(AsyncEvent *event);
+
+    bool catch_error() {
+        return (error == SW_ERROR_AIO_TIMEOUT || error == SW_ERROR_AIO_CANCELED);
+    }
+};
+
+class AsyncThreads {
+  public:
+    bool schedule = false;
+    size_t task_num = 0;
+    Pipe *pipe = nullptr;
+    async::ThreadPool *pool = nullptr;
+    network::Socket *read_socket = nullptr;
+    network::Socket *write_socket = nullptr;
+
+    AsyncThreads();
+    ~AsyncThreads();
+
+    size_t get_task_num() {
+        return task_num;
+    }
+
+    size_t get_queue_size();
+    size_t get_worker_num();
+    void notify_one();
+
+    static int callback(Reactor *reactor, Event *event);
+  private:
+    std::mutex init_lock;
 };
 
 namespace async {
@@ -65,13 +96,6 @@ namespace async {
 typedef void (*Handler)(AsyncEvent *event);
 
 AsyncEvent *dispatch(const AsyncEvent *request);
-int cancel(int task_id);
-int callback(Reactor *reactor, swEvent *_event);
-size_t thread_count();
-
-#ifdef SW_DEBUG
-void notify_one();
-#endif
 
 void handler_gethostbyname(AsyncEvent *event);
 void handler_getaddrinfo(AsyncEvent *event);

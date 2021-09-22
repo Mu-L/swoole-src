@@ -64,6 +64,23 @@ static inline long time(bool steady = false) {
     }
 }
 
+class DeferTask {
+ private:
+    std::stack<Callback> list_;
+ public:
+    void add(Callback fn) {
+        list_.push(fn);
+    }
+
+    ~DeferTask() {
+        while(!list_.empty()) {
+            auto fn = list_.top();
+            fn(nullptr);
+            list_.pop();
+        }
+    }
+};
+
 template <typename Fun>
 class ScopeGuard {
   public:
@@ -106,4 +123,36 @@ inline ScopeGuard<Fun> operator+(ScopeGuardOnExit, Fun &&fn) {
     auto __SCOPEGUARD_CONCATENATE(ext_exitBlock_, __LINE__) = swoole::detail::ScopeGuardOnExit() + [&]()
 
 std::string intersection(std::vector<std::string> &vec1, std::set<std::string> &vec2);
+
+static inline size_t rtrim(char *str, size_t len) {
+    for (size_t i = len; i > 0;) {
+        if (isspace(str[--i])) {
+            str[i] = 0;
+            len--;
+        } else {
+            break;
+        }
+    }
+    return len;
+}
+
+static inline size_t rtrim(const char *str, size_t len) {
+    for (size_t i = len; i > 0;) {
+        if (isspace(str[--i])) {
+            len--;
+        } else {
+            break;
+        }
+    }
+    return len;
+}
+
+static inline ssize_t substr_len(const char *str, size_t len, char separator, bool before = false) {
+    const char *substr = (const char *) memchr(str, separator, len);
+    if (substr == nullptr) {
+        return -1;
+    }
+    return before ? substr - str : str + len - substr - 1;
+}
+
 }  // namespace swoole

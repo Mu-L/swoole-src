@@ -17,7 +17,9 @@
 
 #pragma once
 
+#include "swoole.h"
 #include "swoole_api.h"
+#include "swoole_socket.h"
 #include "swoole_coroutine.h"
 #include "swoole_protocol.h"
 #include "swoole_proxy.h"
@@ -58,23 +60,18 @@ class Socket {
 
     static enum TimeoutType timeout_type_list[4];
 
-#ifdef SW_USE_OPENSSL
-    bool open_ssl = false;
-    swSSL_option ssl_option = {};
-#endif
-
     Socket(int domain, int type, int protocol);
     Socket(int _fd, int _domain, int _type, int _protocol);
-    Socket(enum swSocket_type type = SW_SOCK_TCP);
-    Socket(int _fd, enum swSocket_type _type);
+    Socket(SocketType type = SW_SOCK_TCP);
+    Socket(int _fd, SocketType _type);
     ~Socket();
     bool connect(std::string host, int port, int flags = 0);
     bool connect(const struct sockaddr *addr, socklen_t addrlen);
     bool shutdown(int how = SHUT_RDWR);
-    bool cancel(const enum swEvent_type event);
+    bool cancel(const EventType event);
     bool close();
 
-    inline bool is_connect() {
+    inline bool is_connected() {
         return connected && !closed;
     }
 
@@ -98,6 +95,7 @@ class Socket {
     ssize_t recv_all(void *__buf, size_t __n);
     ssize_t send_all(const void *__buf, size_t __n);
     ssize_t recv_packet(double timeout = 0);
+    ssize_t recv_line(void *__buf, size_t maxlen);
     ssize_t recv_with_buffer(void *__buf, size_t __n);
 
     inline char *pop_packet() {
@@ -108,7 +106,7 @@ class Socket {
         }
     }
 
-    bool poll(enum swEvent_type type);
+    bool poll(EventType type);
     Socket *accept(double timeout = 0);
     bool bind(std::string address, int port = 0);
     bool bind(const struct sockaddr *sa, socklen_t len);
@@ -117,7 +115,31 @@ class Socket {
     ssize_t sendto(const std::string &host, int port, const void *__buf, size_t __n);
     ssize_t recvfrom(void *__buf, size_t __n);
     ssize_t recvfrom(void *__buf, size_t __n, struct sockaddr *_addr, socklen_t *_socklen);
+
 #ifdef SW_USE_OPENSSL
+    /**
+     * Operation sequence:
+     * 1. enable_ssl_encrypt()
+     * 2. Set SSL parameters, such as certificate file, key file
+     * 3. ssl_check_context()
+     * 4. ssl_accept()/ssl_connect()/ssl_handshake()
+     */
+    bool enable_ssl_encrypt() {
+        if (ssl_context.get()) {
+            return false;
+        }
+        ssl_context.reset(new SSLContext());
+        return true;
+    }
+
+    bool ssl_is_enable() {
+        return get_ssl_context() != nullptr;
+    }
+
+    SSLContext *get_ssl_context() {
+        return ssl_context.get();
+    }
+
     bool ssl_check_context();
     bool ssl_handshake();
     bool ssl_verify(bool allow_self_signed);
@@ -130,11 +152,11 @@ class Socket {
         reactor->set_handler(SW_FD_CORO_SOCKET | SW_EVENT_ERROR, error_event_callback);
     }
 
-    inline enum swSocket_type get_type() {
+    inline SocketType get_type() {
         return type;
     }
 
-    inline enum swFd_type get_fd_type() {
+    inline FdType get_fd_type() {
         return socket->fd_type;
     }
 
@@ -173,13 +195,11 @@ class Socket {
         return socket->info.get_port();
     }
 
-
-
-    inline bool has_bound(const enum swEvent_type event = SW_EVENT_RDWR) {
+    inline bool has_bound(const EventType event = SW_EVENT_RDWR) {
         return get_bound_co(event) != nullptr;
     }
 
-    inline Coroutine *get_bound_co(const enum swEvent_type event) {
+    inline Coroutine *get_bound_co(const EventType event) {
         if (event & SW_EVENT_READ) {
             if (read_co) {
                 return read_co;
@@ -193,12 +213,12 @@ class Socket {
         return nullptr;
     }
 
-    inline long get_bound_cid(const enum swEvent_type event = SW_EVENT_RDWR) {
+    inline long get_bound_cid(const EventType event = SW_EVENT_RDWR) {
         Coroutine *co = get_bound_co(event);
         return co ? co->get_cid() : 0;
     }
 
-    const char *get_event_str(const enum swEvent_type event) {
+    const char *get_event_str(const EventType event) {
         if (event == SW_EVENT_READ) {
             return "reading";
         } else if (event == SW_EVENT_WRITE) {
@@ -208,10 +228,10 @@ class Socket {
         }
     }
 
-    inline void check_bound_co(const enum swEvent_type event) {
+    inline void check_bound_co(const EventType event) {
         long cid = get_bound_cid(event);
         if (sw_unlikely(cid)) {
-            swFatalError(SW_ERROR_CO_HAS_BEEN_BOUND,
+            swoole_fatal_error(SW_ERROR_CO_HAS_BEEN_BOUND,
                          "Socket#%d has already been bound to another coroutine#%ld, "
                          "%s of the same socket in coroutine#%ld at the same time is not allowed",
                          sock_fd,
@@ -271,15 +291,17 @@ class Socket {
             return connect_timeout;
         } else if (type == TIMEOUT_READ) {
             return read_timeout;
-        } else  // if (type == TIMEOUT_WRITE)
-        {
+        } else if (type == TIMEOUT_WRITE) {
             return write_timeout;
+        } else {
+            assert(0);
+            return -1;
         }
     }
 
     inline bool set_option(int level, int optname, int optval) {
         if (socket->set_option(level, optname, optval) < 0) {
-            swSysWarn("setsockopt(%d, %d, %d, %d) failed", sock_fd, level, optname, optval);
+            swoole_sys_warning("setsockopt(%d, %d, %d, %d) failed", sock_fd, level, optname, optval);
             return false;
         }
         return true;
@@ -338,8 +360,20 @@ class Socket {
         buffer_init_size = size;
     }
 
+    int move_fd() {
+        int sockfd = socket->fd;
+        socket->fd = -1;
+        return sockfd;
+    }
+
+    network::Socket *move_socket() {
+        network::Socket *_socket = socket;
+        socket = nullptr;
+        return _socket;
+    }
+
 #ifdef SW_USE_OPENSSL
-    inline bool is_ssl_enable() {
+    inline bool ssl_is_available() {
         return socket && ssl_handshaked;
     }
 
@@ -351,7 +385,7 @@ class Socket {
 #endif
 
   private:
-    enum swSocket_type type;
+    SocketType type;
     network::Socket *socket = nullptr;
     int sock_domain = 0;
     int sock_type = 0;
@@ -361,7 +395,7 @@ class Socket {
     Coroutine *read_co = nullptr;
     Coroutine *write_co = nullptr;
 #ifdef SW_USE_OPENSSL
-    enum swEvent_type want_event = SW_EVENT_NULL;
+    EventType want_event = SW_EVENT_NULL;
 #endif
 
     std::string connect_host;
@@ -390,9 +424,9 @@ class Socket {
 #ifdef SW_USE_OPENSSL
     bool ssl_is_server = false;
     bool ssl_handshaked = false;
-    SSL_CTX *ssl_context = nullptr;
+    std::shared_ptr<SSLContext> ssl_context = nullptr;
     std::string ssl_host_name;
-    bool ssl_create(SSL_CTX *ssl_context);
+    bool ssl_create(SSLContext *ssl_context);
 #endif
 
     bool connected = false;
@@ -409,9 +443,17 @@ class Socket {
     static int writable_event_callback(Reactor *reactor, Event *event);
     static int error_event_callback(Reactor *reactor, Event *event);
 
-    inline void init_sock_type(enum swSocket_type _type);
+    inline void init_sock_type(SocketType _type);
     inline bool init_sock();
     bool init_reactor_socket(int fd);
+
+    void check_return_value(ssize_t retval) {
+        if (retval >= 0) {
+            set_err(0);
+        } else if (errCode == 0) {
+            set_err(errno);
+        }
+    }
 
     inline void init_options() {
         if (type == SW_SOCK_TCP || type == SW_SOCK_TCP6) {
@@ -424,13 +466,13 @@ class Socket {
         protocol.package_max_length = SW_INPUT_BUFFER_SIZE;
     }
 
-    bool add_event(const enum swEvent_type event);
-    bool wait_event(const enum swEvent_type event, const void **__buf = nullptr, size_t __n = 0);
+    bool add_event(const EventType event);
+    bool wait_event(const EventType event, const void **__buf = nullptr, size_t __n = 0);
 
     ssize_t recv_packet_with_length_protocol();
     ssize_t recv_packet_with_eof_protocol();
 
-    inline bool is_available(const enum swEvent_type event) {
+    inline bool is_available(const EventType event) {
         if (event != SW_EVENT_NULL) {
             check_bound_co(event);
         }
@@ -454,10 +496,8 @@ class Socket {
                 if (timeout > 0) {
                     *timer_pp = swoole_timer_add((long) (timeout * 1000), false, callback, socket_);
                     return *timer_pp != nullptr;
-                } else  // if (timeout < 0)
-                {
-                    *timer_pp = (TimerNode *) -1;
                 }
+                *timer_pp = (TimerNode *) -1;
             }
             return true;
         }
@@ -547,6 +587,7 @@ class ProtocolSwitch {
     bool ori_open_length_check;
     Protocol ori_protocol;
     Socket *socket_;
+
   public:
     ProtocolSwitch(Socket *socket) {
         ori_open_eof_check = socket->open_eof_check;
@@ -563,7 +604,12 @@ class ProtocolSwitch {
     }
 };
 
-std::vector<std::string> dns_lookup(const char *domain, double timeout = 2.0);
+std::vector<std::string> dns_lookup(const char *domain, int family = AF_INET, double timeout = 2.0);
+std::vector<std::string> dns_lookup_impl_with_socket(const char *domain, int family, double timeout);
+#ifdef SW_USE_CARES
+std::vector<std::string> dns_lookup_impl_with_cares(const char *domain, int family, double timeout);
+#endif
+std::string get_ip_by_hosts(const std::string &domain);
 //-------------------------------------------------------------------------------
 }  // namespace coroutine
 }  // namespace swoole

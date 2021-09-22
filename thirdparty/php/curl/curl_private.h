@@ -44,10 +44,6 @@
 #define SAVE_CURL_ERROR(__handle, __err) \
     do { (__handle)->err.no = (int) __err; } while (0)
 
-PHP_MINIT_FUNCTION(curl);
-PHP_MSHUTDOWN_FUNCTION(curl);
-PHP_MINFO_FUNCTION(curl);
-
 typedef struct {
 	zval                  func_name;
 	zend_fcall_info_cache fci_cache;
@@ -99,6 +95,8 @@ struct _php_curl_free {
 	HashTable *slist;
 };
 
+using CurlCallback = std::function<bool(void)>;
+
 typedef struct {
 	CURL                         *cp;
 	php_curl_handlers            *handlers;
@@ -113,10 +111,9 @@ typedef struct {
 	zval                          postfields;
 	/* CurlShareHandle object set using CURLOPT_SHARE. */
 #if PHP_VERSION_ID >= 80000
-	struct _php_curlsh *share;
+	struct _php_curlsh            *share;
 #endif
-    swoole::FutureTask *context;
-    std::function<bool(void)> *callback;
+	const char                    *private_data;
 #if PHP_VERSION_ID >= 80000
 	zend_object                   std;
 #endif
@@ -128,9 +125,15 @@ typedef struct {
 	php_curlm_server_push	*server_push;
 } php_curlm_handlers;
 
+namespace swoole  { namespace curl {
+class Multi;
+}}
+
+using swoole::curl::Multi;
+
 typedef struct {
 	int         still_running;
-	CURLM      *multi;
+	Multi *multi;
 	zend_llist  easyh;
 	php_curlm_handlers	*handlers;
 	struct {
@@ -147,12 +150,12 @@ typedef struct _php_curlsh {
 	zend_object std;
 } php_curlsh;
 
-php_curl *init_curl_handle_into_zval(zval *curl);
-void init_curl_handle(php_curl *ch);
-void _php_curl_cleanup_handle(php_curl *);
-void _php_curl_multi_cleanup_list(void *data);
-void _php_curl_verify_handlers(php_curl *ch, int reporterror);
-void _php_setup_easy_copy_handlers(php_curl *ch, php_curl *source);
+php_curl *swoole_curl_init_handle_into_zval(zval *curl);
+void swoole_curl_init_handle(php_curl *ch);
+void swoole_curl_cleanup_handle(php_curl *);
+void swoole_curl_multi_cleanup_list(void *data);
+void swoole_curl_verify_handlers(php_curl *ch, int reporterror);
+void swoole_setup_easy_copy_handlers(php_curl *ch, php_curl *source);
 
 #if PHP_VERSION_ID >= 80000
 static inline php_curl *curl_from_obj(zend_object *obj) {
@@ -166,8 +169,24 @@ static inline php_curlsh *curl_share_from_obj(zend_object *obj) {
 }
 
 #define Z_CURL_SHARE_P(zv) curl_share_from_obj(Z_OBJ_P(zv))
+void curl_multi_register_class(const zend_function_entry *method_entries);
 int curl_cast_object(zend_object *obj, zval *result, int type);
+#else
+#define Z_CURL_P(zv)     swoole_curl_get_handle(zv)
+#endif /* PHP8 end */
+
+php_curl *swoole_curl_get_handle(zval *zid, bool exclusive = true, bool required = true);
+
+SW_EXTERN_C_BEGIN
+#if PHP_VERSION_ID < 80000
+void swoole_curl_close_ex(php_curl *ch);
+void swoole_curl_close(zend_resource *rsrc);
+void swoole_curl_multi_close(zend_resource *rsrc);
+php_curl *swoole_curl_alloc_handle();
+int swoole_curl_get_le_curl();
+int swoole_curl_get_le_curl_multi();
 #endif
+SW_EXTERN_C_END
 
 #endif  /* _PHP_CURL_PRIVATE_H */
 #endif

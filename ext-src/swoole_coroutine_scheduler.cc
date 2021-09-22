@@ -98,6 +98,7 @@ static const zend_function_entry swoole_coroutine_scheduler_methods[] = {
     PHP_ME(swoole_coroutine_scheduler, add, arginfo_swoole_coroutine_scheduler_add, ZEND_ACC_PUBLIC)
     PHP_ME(swoole_coroutine_scheduler, parallel, arginfo_swoole_coroutine_scheduler_parallel, ZEND_ACC_PUBLIC)
     PHP_ME(swoole_coroutine_scheduler, set, arginfo_swoole_coroutine_scheduler_set, ZEND_ACC_PUBLIC)
+    PHP_ME(swoole_coroutine_scheduler, getOptions, arginfo_swoole_void, ZEND_ACC_PUBLIC)
     PHP_ME(swoole_coroutine_scheduler, start, arginfo_swoole_void, ZEND_ACC_PUBLIC)
     PHP_FE_END
 };
@@ -110,7 +111,7 @@ void php_swoole_coroutine_scheduler_minit(int module_number) {
                         nullptr,
                         "Co\\Scheduler",
                         swoole_coroutine_scheduler_methods);
-    SW_SET_CLASS_SERIALIZABLE(swoole_coroutine_scheduler, zend_class_serialize_deny, zend_class_unserialize_deny);
+    SW_SET_CLASS_NOT_SERIALIZABLE(swoole_coroutine_scheduler);
     SW_SET_CLASS_CLONEABLE(swoole_coroutine_scheduler, sw_zend_class_clone_deny);
     SW_SET_CLASS_UNSET_PROPERTY_HANDLER(swoole_coroutine_scheduler, sw_zend_class_unset_property_deny);
     SW_SET_CLASS_CREATE_WITH_ITS_OWN_HANDLERS(swoole_coroutine_scheduler);
@@ -122,7 +123,7 @@ void php_swoole_coroutine_scheduler_minit(int module_number) {
 static zend_fcall_info_cache exit_condition_fci_cache;
 static bool exit_condition_cleaner;
 
-static bool php_swoole_coroutine_reactor_can_exit(Reactor *reactor, int &event_num) {
+static bool php_swoole_coroutine_reactor_can_exit(Reactor *reactor, size_t &event_num) {
     zval retval;
     int success;
 
@@ -138,6 +139,32 @@ static bool php_swoole_coroutine_reactor_can_exit(Reactor *reactor, int &event_n
     return !(Z_TYPE_P(&retval) == IS_FALSE);
 }
 
+void php_swoole_set_coroutine_option(zend_array *vht) {
+    zval *ztmp;
+    if (php_swoole_array_get_value(vht, "max_coro_num", ztmp) ||
+            php_swoole_array_get_value(vht, "max_coroutine", ztmp)) {
+        zend_long max_num = zval_get_long(ztmp);
+        PHPCoroutine::set_max_num(max_num <= 0 ? SW_DEFAULT_MAX_CORO_NUM : max_num);
+    }
+    if (php_swoole_array_get_value(vht, "enable_deadlock_check", ztmp)) {
+        PHPCoroutine::set_deadlock_check(zval_is_true(ztmp));
+    }
+    if (php_swoole_array_get_value(vht, "hook_flags", ztmp)) {
+        PHPCoroutine::set_hook_flags(zval_get_long(ztmp));
+    }
+    if (php_swoole_array_get_value(vht, "enable_preemptive_scheduler", ztmp)) {
+        PHPCoroutine::enable_preemptive_scheduler(zval_is_true(ztmp));
+    }
+    if (php_swoole_array_get_value(vht, "c_stack_size", ztmp) || php_swoole_array_get_value(vht, "stack_size", ztmp)) {
+        Coroutine::set_stack_size(zval_get_long(ztmp));
+    }
+    if (PHPCoroutine::options) {
+        zend_hash_merge(PHPCoroutine::options, vht, zval_add_ref, true);
+    } else {
+        PHPCoroutine::options = zend_array_dup(vht);
+    }
+}
+
 PHP_METHOD(swoole_coroutine_scheduler, set) {
     zval *zset = nullptr;
     HashTable *vht = nullptr;
@@ -149,42 +176,13 @@ PHP_METHOD(swoole_coroutine_scheduler, set) {
 
     vht = Z_ARRVAL_P(zset);
     php_swoole_set_global_option(vht);
+    php_swoole_set_coroutine_option(vht);
 
-    if (php_swoole_array_get_value(vht, "max_coroutine", ztmp)) {
-        zend_long max_num = zval_get_long(ztmp);
-        PHPCoroutine::set_max_num(max_num <= 0 ? SW_DEFAULT_MAX_CORO_NUM : max_num);
-    }
-    if (php_swoole_array_get_value(vht, "hook_flags", ztmp)) {
-        PHPCoroutine::set_hook_flags(zval_get_long(ztmp));
-    }
-    if (php_swoole_array_get_value(vht, "enable_preemptive_scheduler", ztmp)) {
-        PHPCoroutine::enable_preemptive_scheduler(zval_is_true(ztmp));
-    }
-    if (php_swoole_array_get_value(vht, "c_stack_size", ztmp) || php_swoole_array_get_value(vht, "stack_size", ztmp)) {
-        Coroutine::set_stack_size(zval_get_long(ztmp));
-    }
     if (php_swoole_array_get_value(vht, "dns_cache_expire", ztmp)) {
         System::set_dns_cache_expire((time_t) zval_get_long(ztmp));
     }
     if (php_swoole_array_get_value(vht, "dns_cache_capacity", ztmp)) {
         System::set_dns_cache_capacity((size_t) zval_get_long(ztmp));
-    }
-    /* AIO */
-    if (php_swoole_array_get_value(vht, "aio_core_worker_num", ztmp)) {
-        zend_long v = zval_get_long(ztmp);
-        v = SW_MAX(1, SW_MIN(v, UINT32_MAX));
-        SwooleG.aio_core_worker_num = v;
-    }
-    if (php_swoole_array_get_value(vht, "aio_worker_num", ztmp)) {
-        zend_long v = zval_get_long(ztmp);
-        v = SW_MAX(1, SW_MIN(v, UINT32_MAX));
-        SwooleG.aio_worker_num = v;
-    }
-    if (php_swoole_array_get_value(vht, "aio_max_wait_time", ztmp)) {
-        SwooleG.aio_max_wait_time = zval_get_double(ztmp);
-    }
-    if (php_swoole_array_get_value(vht, "aio_max_idle_time", ztmp)) {
-        SwooleG.aio_max_idle_time = zval_get_double(ztmp);
     }
     /* Reactor can exit */
     if ((ztmp = zend_hash_str_find(vht, ZEND_STRL("exit_condition")))) {
@@ -223,6 +221,13 @@ PHP_METHOD(swoole_coroutine_scheduler, set) {
             }
         }
     }
+}
+
+PHP_METHOD(swoole_coroutine_scheduler, getOptions) {
+    if (!PHPCoroutine::options) {
+        return;
+    }
+    RETURN_ARR(zend_array_dup(PHPCoroutine::options));
 }
 
 static void scheduler_add_task(SchedulerObject *s, SchedulerTask *task) {
