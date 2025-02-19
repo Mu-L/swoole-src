@@ -10,14 +10,16 @@
   | to obtain it through the world-wide-web, please send a note to       |
   | license@swoole.com so we can mail you a copy immediately.            |
   +----------------------------------------------------------------------+
-  | Author: Tianfeng Han  <mikan.tenny@gmail.com>                        |
+  | Author: Tianfeng Han  <rango@swoole.com>                             |
   |         Twosee  <twose@qq.com>                                       |
   +----------------------------------------------------------------------+
 */
 
 #pragma once
 
+#include "swoole.h"
 #include "swoole_api.h"
+#include "swoole_socket.h"
 #include "swoole_coroutine.h"
 #include "swoole_protocol.h"
 #include "swoole_proxy.h"
@@ -58,24 +60,27 @@ class Socket {
 
     static enum TimeoutType timeout_type_list[4];
 
-#ifdef SW_USE_OPENSSL
-    bool open_ssl = false;
-    swSSL_option ssl_option = {};
-#endif
-
     Socket(int domain, int type, int protocol);
     Socket(int _fd, int _domain, int _type, int _protocol);
-    Socket(enum swSocket_type type = SW_SOCK_TCP);
-    Socket(int _fd, enum swSocket_type _type);
+    Socket(SocketType type = SW_SOCK_TCP);
+    Socket(int _fd, SocketType _type);
     ~Socket();
-    bool connect(std::string host, int port, int flags = 0);
+    bool connect(std::string host, int port = 0, int flags = 0);
     bool connect(const struct sockaddr *addr, socklen_t addrlen);
     bool shutdown(int how = SHUT_RDWR);
-    bool cancel(const enum swEvent_type event);
+    bool cancel(const EventType event);
     bool close();
 
-    inline bool is_connect() {
-        return connected && !closed;
+    bool is_connected() {
+        return connected && !is_closed();
+    }
+
+    bool is_closed() {
+        return sock_fd == SW_BAD_SOCKET;
+    }
+
+    bool is_port_required() {
+        return type <= SW_SOCK_UDP6;
     }
 
     bool check_liveness();
@@ -83,7 +88,7 @@ class Socket {
     ssize_t recv(void *__buf, size_t __n);
     ssize_t send(const void *__buf, size_t __n);
 
-    inline ssize_t send(const std::string &buf) {
+    ssize_t send(const std::string &buf) {
         return send(buf.c_str(), buf.length());
     }
 
@@ -98,9 +103,10 @@ class Socket {
     ssize_t recv_all(void *__buf, size_t __n);
     ssize_t send_all(const void *__buf, size_t __n);
     ssize_t recv_packet(double timeout = 0);
+    ssize_t recv_line(void *__buf, size_t maxlen);
     ssize_t recv_with_buffer(void *__buf, size_t __n);
 
-    inline char *pop_packet() {
+    char *pop_packet() {
         if (read_buffer->offset == 0) {
             return nullptr;
         } else {
@@ -108,7 +114,7 @@ class Socket {
         }
     }
 
-    bool poll(enum swEvent_type type);
+    bool poll(EventType type, double timeout = 0);
     Socket *accept(double timeout = 0);
     bool bind(std::string address, int port = 0);
     bool bind(const struct sockaddr *sa, socklen_t len);
@@ -117,69 +123,89 @@ class Socket {
     ssize_t sendto(const std::string &host, int port, const void *__buf, size_t __n);
     ssize_t recvfrom(void *__buf, size_t __n);
     ssize_t recvfrom(void *__buf, size_t __n, struct sockaddr *_addr, socklen_t *_socklen);
+
 #ifdef SW_USE_OPENSSL
-    bool ssl_check_context();
+    /**
+     * Operation sequence:
+     * 1. enable_ssl_encrypt()
+     * 2. Set SSL parameters, such as certificate file, key file
+     * 3. ssl_handshake(), to be executed after connect or accept
+     */
+    bool enable_ssl_encrypt() {
+        if (ssl_context.get()) {
+            return false;
+        }
+        ssl_context.reset(new SSLContext());
+        return true;
+    }
+
+    bool ssl_is_enable() {
+        return get_ssl_context() != nullptr;
+    }
+
+    SSLContext *get_ssl_context() {
+        return ssl_context.get();
+    }
+
     bool ssl_handshake();
     bool ssl_verify(bool allow_self_signed);
     std::string ssl_get_peer_cert();
 #endif
 
     static inline void init_reactor(Reactor *reactor) {
-        reactor->set_handler(SW_FD_CORO_SOCKET | SW_EVENT_READ, readable_event_callback);
-        reactor->set_handler(SW_FD_CORO_SOCKET | SW_EVENT_WRITE, writable_event_callback);
-        reactor->set_handler(SW_FD_CORO_SOCKET | SW_EVENT_ERROR, error_event_callback);
+        reactor->set_handler(SW_FD_CO_SOCKET | SW_EVENT_READ, readable_event_callback);
+        reactor->set_handler(SW_FD_CO_SOCKET | SW_EVENT_WRITE, writable_event_callback);
+        reactor->set_handler(SW_FD_CO_SOCKET | SW_EVENT_ERROR, error_event_callback);
     }
 
-    inline enum swSocket_type get_type() {
+    SocketType get_type() {
         return type;
     }
 
-    inline enum swFd_type get_fd_type() {
+    FdType get_fd_type() {
         return socket->fd_type;
     }
 
-    inline int get_sock_domain() {
+    int get_sock_domain() {
         return sock_domain;
     }
 
-    inline int get_sock_type() {
+    int get_sock_type() {
         return sock_type;
     }
 
-    inline int get_sock_protocol() {
+    int get_sock_protocol() {
         return sock_protocol;
     }
 
-    inline int get_fd() {
+    int get_fd() {
         return sock_fd;
     }
 
-    inline int get_bind_port() {
+    int get_bind_port() {
         return bind_port;
     }
 
-    inline network::Socket *get_socket() {
+    network::Socket *get_socket() {
         return socket;
     }
 
     bool getsockname(network::Address *sa);
     bool getpeername(network::Address *sa);
 
-    inline const char *get_ip() {
+    const char *get_ip() {
         return socket->info.get_ip();
     }
 
-    inline int get_port() {
+    int get_port() {
         return socket->info.get_port();
     }
 
-
-
-    inline bool has_bound(const enum swEvent_type event = SW_EVENT_RDWR) {
+    bool has_bound(const EventType event = SW_EVENT_RDWR) {
         return get_bound_co(event) != nullptr;
     }
 
-    inline Coroutine *get_bound_co(const enum swEvent_type event) {
+    Coroutine *get_bound_co(const EventType event) {
         if (event & SW_EVENT_READ) {
             if (read_co) {
                 return read_co;
@@ -193,12 +219,12 @@ class Socket {
         return nullptr;
     }
 
-    inline long get_bound_cid(const enum swEvent_type event = SW_EVENT_RDWR) {
+    long get_bound_cid(const EventType event = SW_EVENT_RDWR) {
         Coroutine *co = get_bound_co(event);
         return co ? co->get_cid() : 0;
     }
 
-    const char *get_event_str(const enum swEvent_type event) {
+    const char *get_event_str(const EventType event) {
         if (event == SW_EVENT_READ) {
             return "reading";
         } else if (event == SW_EVENT_WRITE) {
@@ -208,32 +234,32 @@ class Socket {
         }
     }
 
-    inline void check_bound_co(const enum swEvent_type event) {
+    void check_bound_co(const EventType event) {
         long cid = get_bound_cid(event);
         if (sw_unlikely(cid)) {
-            swFatalError(SW_ERROR_CO_HAS_BEEN_BOUND,
-                         "Socket#%d has already been bound to another coroutine#%ld, "
-                         "%s of the same socket in coroutine#%ld at the same time is not allowed",
-                         sock_fd,
-                         cid,
-                         get_event_str(event),
-                         Coroutine::get_current_cid());
+            swoole_fatal_error(SW_ERROR_CO_HAS_BEEN_BOUND,
+                               "Socket#%d has already been bound to another coroutine#%ld, "
+                               "%s of the same socket in coroutine#%ld at the same time is not allowed",
+                               sock_fd,
+                               cid,
+                               get_event_str(event),
+                               Coroutine::get_current_cid());
         }
     }
 
-    inline void set_err(int e) {
+    void set_err(int e) {
         errCode = errno = e;
         swoole_set_last_error(errCode);
         errMsg = e ? swoole_strerror(e) : "";
     }
 
-    inline void set_err(int e, const char *s) {
+    void set_err(int e, const char *s) {
         errCode = errno = e;
         swoole_set_last_error(errCode);
         errMsg = s;
     }
 
-    inline void set_err(int e, std::string s) {
+    void set_err(int e, std::string s) {
         errCode = errno = e;
         swoole_set_last_error(errCode);
         errString = s;
@@ -241,7 +267,7 @@ class Socket {
     }
 
     /* set connect read write timeout */
-    inline void set_timeout(double timeout, int type = TIMEOUT_ALL) {
+    void set_timeout(double timeout, int type = TIMEOUT_ALL) {
         if (timeout == 0) {
             return;
         }
@@ -259,11 +285,11 @@ class Socket {
         }
     }
 
-    inline void set_timeout(struct timeval *timeout, int type = TIMEOUT_ALL) {
+    void set_timeout(struct timeval *timeout, int type = TIMEOUT_ALL) {
         set_timeout((double) timeout->tv_sec + ((double) timeout->tv_usec / 1000 / 1000), type);
     }
 
-    inline double get_timeout(enum TimeoutType type = TIMEOUT_ALL) {
+    double get_timeout(enum TimeoutType type = TIMEOUT_ALL) {
         SW_ASSERT_1BYTE(type);
         if (type == TIMEOUT_DNS) {
             return dns_timeout;
@@ -271,21 +297,23 @@ class Socket {
             return connect_timeout;
         } else if (type == TIMEOUT_READ) {
             return read_timeout;
-        } else  // if (type == TIMEOUT_WRITE)
-        {
+        } else if (type == TIMEOUT_WRITE) {
             return write_timeout;
+        } else {
+            assert(0);
+            return -1;
         }
     }
 
-    inline bool set_option(int level, int optname, int optval) {
+    bool set_option(int level, int optname, int optval) {
         if (socket->set_option(level, optname, optval) < 0) {
-            swSysWarn("setsockopt(%d, %d, %d, %d) failed", sock_fd, level, optname, optval);
+            swoole_sys_warning("setsockopt(%d, %d, %d, %d) failed", sock_fd, level, optname, optval);
             return false;
         }
         return true;
     }
 
-    inline String *get_read_buffer() {
+    String *get_read_buffer() {
         if (sw_unlikely(!read_buffer)) {
             read_buffer = make_string(SW_BUFFER_SIZE_BIG, buffer_allocator);
             if (!read_buffer) {
@@ -295,7 +323,7 @@ class Socket {
         return read_buffer;
     }
 
-    inline String *get_write_buffer() {
+    String *get_write_buffer() {
         if (sw_unlikely(!write_buffer)) {
             write_buffer = make_string(SW_BUFFER_SIZE_BIG, buffer_allocator);
             if (!write_buffer) {
@@ -305,7 +333,15 @@ class Socket {
         return write_buffer;
     }
 
-    inline String *pop_read_buffer() {
+    void set_resolve_context(NameResolver::Context *ctx) {
+        resolve_context_ = ctx;
+    }
+
+    void set_dtor(const std::function<void(Socket *)> &dtor) {
+        dtor_ = dtor;
+    }
+
+    String *pop_read_buffer() {
         if (sw_unlikely(!read_buffer)) {
             return nullptr;
         }
@@ -314,7 +350,7 @@ class Socket {
         return tmp;
     }
 
-    inline String *pop_write_buffer() {
+    String *pop_write_buffer() {
         if (sw_unlikely(!write_buffer)) {
             return nullptr;
         }
@@ -323,23 +359,34 @@ class Socket {
         return tmp;
     }
 
-    inline void set_zero_copy(bool enable) {
+    void set_zero_copy(bool enable) {
         zero_copy = enable;
     }
 
-    inline void set_buffer_allocator(const Allocator *allocator) {
+    void set_buffer_allocator(const Allocator *allocator) {
         buffer_allocator = allocator;
     }
 
-    inline void set_buffer_init_size(size_t size) {
+    void set_buffer_init_size(size_t size) {
         if (size == 0) {
             return;
         }
         buffer_init_size = size;
     }
 
+    int move_fd() {
+        sock_fd = SW_BAD_SOCKET;
+        return socket->move_fd();
+    }
+
+    network::Socket *move_socket() {
+        network::Socket *_socket = socket;
+        socket = nullptr;
+        return _socket;
+    }
+
 #ifdef SW_USE_OPENSSL
-    inline bool is_ssl_enable() {
+    bool ssl_is_available() {
         return socket && ssl_handshaked;
     }
 
@@ -351,7 +398,7 @@ class Socket {
 #endif
 
   private:
-    enum swSocket_type type;
+    SocketType type;
     network::Socket *socket = nullptr;
     int sock_domain = 0;
     int sock_type = 0;
@@ -361,7 +408,7 @@ class Socket {
     Coroutine *read_co = nullptr;
     Coroutine *write_co = nullptr;
 #ifdef SW_USE_OPENSSL
-    enum swEvent_type want_event = SW_EVENT_NULL;
+    EventType want_event = SW_EVENT_NULL;
 #endif
 
     std::string connect_host;
@@ -390,17 +437,20 @@ class Socket {
 #ifdef SW_USE_OPENSSL
     bool ssl_is_server = false;
     bool ssl_handshaked = false;
-    SSL_CTX *ssl_context = nullptr;
+    std::shared_ptr<SSLContext> ssl_context = nullptr;
     std::string ssl_host_name;
-    bool ssl_create(SSL_CTX *ssl_context);
+    bool ssl_context_create();
+    bool ssl_create(SSLContext *ssl_context);
 #endif
 
     bool connected = false;
     bool shutdown_read = false;
     bool shutdown_write = false;
-    bool closed = false;
 
     bool zero_copy = false;
+
+    NameResolver::Context *resolve_context_ = nullptr;
+    std::function<void(Socket *)> dtor_;
 
     Socket(network::Socket *sock, Socket *socket);
 
@@ -409,11 +459,19 @@ class Socket {
     static int writable_event_callback(Reactor *reactor, Event *event);
     static int error_event_callback(Reactor *reactor, Event *event);
 
-    inline void init_sock_type(enum swSocket_type _type);
-    inline bool init_sock();
+    void init_sock_type(SocketType _type);
+    bool init_sock();
     bool init_reactor_socket(int fd);
 
-    inline void init_options() {
+    void check_return_value(ssize_t retval) {
+        if (retval >= 0) {
+            set_err(0);
+        } else if (errCode == 0) {
+            set_err(errno);
+        }
+    }
+
+    void init_options() {
         if (type == SW_SOCK_TCP || type == SW_SOCK_TCP6) {
             set_option(IPPROTO_TCP, TCP_NODELAY, 1);
         }
@@ -424,18 +482,23 @@ class Socket {
         protocol.package_max_length = SW_INPUT_BUFFER_SIZE;
     }
 
-    bool add_event(const enum swEvent_type event);
-    bool wait_event(const enum swEvent_type event, const void **__buf = nullptr, size_t __n = 0);
+    bool add_event(const EventType event);
+    bool wait_event(const EventType event, const void **__buf = nullptr, size_t __n = 0);
+    bool try_connect();
 
     ssize_t recv_packet_with_length_protocol();
     ssize_t recv_packet_with_eof_protocol();
 
-    inline bool is_available(const enum swEvent_type event) {
+    bool is_available(const EventType event) {
         if (event != SW_EVENT_NULL) {
             check_bound_co(event);
         }
-        if (sw_unlikely(closed)) {
-            set_err(ECONNRESET);
+        if (sw_unlikely(is_closed())) {
+            set_err(EBADF);
+            return false;
+        }
+        if (sw_unlikely(socket->close_wait)) {
+            set_err(SW_ERROR_CO_SOCKET_CLOSE_WAIT);
             return false;
         }
         return true;
@@ -446,18 +509,16 @@ class Socket {
 
     class TimerController {
       public:
-        TimerController(TimerNode **timer_pp, double timeout, Socket *sock, TimerCallback callback)
-            : timer_pp(timer_pp), timeout(timeout), socket_(sock), callback(callback) {}
+        TimerController(TimerNode **_timer_pp, double _timeout, Socket *_socket, TimerCallback _callback)
+            : timer_pp(_timer_pp), timeout(_timeout), socket_(_socket), callback(std::move(_callback)) {}
         bool start() {
             if (timeout != 0 && !*timer_pp) {
                 enabled = true;
                 if (timeout > 0) {
-                    *timer_pp = swoole_timer_add((long) (timeout * 1000), false, callback, socket_);
+                    *timer_pp = swoole_timer_add(timeout, false, callback, socket_);
                     return *timer_pp != nullptr;
-                } else  // if (timeout < 0)
-                {
-                    *timer_pp = (TimerNode *) -1;
                 }
+                *timer_pp = (TimerNode *) -1;
             }
             return true;
         }
@@ -481,16 +542,16 @@ class Socket {
   public:
     class TimeoutSetter {
       public:
-        TimeoutSetter(Socket *socket, double timeout, const enum TimeoutType type)
-            : socket_(socket), timeout(timeout), type(type) {
-            if (timeout == 0) {
+        TimeoutSetter(Socket *socket, double _timeout, const enum TimeoutType _type)
+            : socket_(socket), timeout(_timeout), type(_type) {
+            if (_timeout == 0) {
                 return;
             }
             for (uint8_t i = 0; i < SW_ARRAY_SIZE(timeout_type_list); i++) {
-                if (type & timeout_type_list[i]) {
+                if (_type & timeout_type_list[i]) {
                     original_timeout[i] = socket->get_timeout(timeout_type_list[i]);
-                    if (timeout != original_timeout[i]) {
-                        socket->set_timeout(timeout, timeout_type_list[i]);
+                    if (_timeout != original_timeout[i]) {
+                        socket->set_timeout(_timeout, timeout_type_list[i]);
                     }
                 }
             }
@@ -515,12 +576,13 @@ class Socket {
         double original_timeout[sizeof(timeout_type_list)] = {};
     };
 
-    class timeout_controller : public TimeoutSetter {
+    class TimeoutController : public TimeoutSetter {
       public:
-        timeout_controller(Socket *socket, double timeout, const enum TimeoutType type)
-            : TimeoutSetter(socket, timeout, type) {}
-        inline bool has_timedout(const enum TimeoutType type) {
-            SW_ASSERT_1BYTE(type);
+        TimeoutController(Socket *_socket, double _timeout, const enum TimeoutType _type)
+            : TimeoutSetter(_socket, _timeout, _type) {}
+
+        bool has_timedout(const enum TimeoutType _type) {
+            SW_ASSERT_1BYTE(_type);
             if (timeout > 0) {
                 if (sw_unlikely(startup_time == 0)) {
                     startup_time = microtime();
@@ -530,7 +592,7 @@ class Socket {
                         socket_->set_err(ETIMEDOUT);
                         return true;
                     }
-                    socket_->set_timeout(timeout - used_time, type);
+                    socket_->set_timeout(timeout - used_time, _type);
                 }
             }
             return false;
@@ -547,6 +609,7 @@ class ProtocolSwitch {
     bool ori_open_length_check;
     Protocol ori_protocol;
     Socket *socket_;
+
   public:
     ProtocolSwitch(Socket *socket) {
         ori_open_eof_check = socket->open_eof_check;
@@ -563,9 +626,14 @@ class ProtocolSwitch {
     }
 };
 
-std::vector<std::string> dns_lookup(const char *domain, double timeout = 2.0);
+std::vector<std::string> dns_lookup(const char *domain, int family = AF_INET, double timeout = 2.0);
+std::vector<std::string> dns_lookup_impl_with_socket(const char *domain, int family, double timeout);
+#ifdef SW_USE_CARES
+std::vector<std::string> dns_lookup_impl_with_cares(const char *domain, int family, double timeout);
+#endif
+std::string get_ip_by_hosts(const std::string &domain);
 //-------------------------------------------------------------------------------
 }  // namespace coroutine
 }  // namespace swoole
 
-swoole::coroutine::Socket *swoole_coroutine_get_socket_object(int sockfd);
+std::shared_ptr<swoole::coroutine::Socket> swoole_coroutine_get_socket_object(int sockfd);

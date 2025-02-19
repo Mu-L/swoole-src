@@ -1,20 +1,23 @@
-FROM hyperf/hyperf:7.4-alpine-v3.11-dev
+ARG PHP_VERSION
+ARG ALPINE_VERSION
 
-LABEL maintainer="Swoole Team <team@swoole.com>" version="1.0" license="MIT"
+FROM phpswoole/php:${PHP_VERSION}-alpine
 
-COPY . /opt/www
+LABEL maintainer="Swoole Team <team@swoole.com>" version="1.0" license="Apache2"
 
-WORKDIR /opt/www
+ARG PHP_VERSION
+
+COPY . /swoole
+
+WORKDIR /swoole
 
 RUN set -ex \
-    && ln -sf /usr/bin/phpize7 /usr/local/bin/phpize \
-    && ln -sf /usr/bin/php-config7 /usr/local/bin/php-config \
     && phpize \
-    && ./configure --enable-mysqlnd --enable-openssl --enable-http2 \
-    && make -s -j$(nproc) && make install \
-    && echo "extension=swoole.so" > /etc/php7/conf.d/50_swoole.ini \
-    # check
-    && php -v \
-    && php -m \
-    && php --ri swoole \
-    && echo -e "\033[42;37m Build Completed :).\033[0m\n"
+    && ./configure --enable-openssl --enable-swoole-curl \
+    && make -s -j$(nproc) && make install
+
+RUN echo "extension=swoole.so" > "/usr/local/etc/php/conf.d/swoole.ini"
+RUN php -v
+RUN php -m
+RUN php --ri swoole
+RUN echo -e "\033[42;37m Build Completed :).\033[0m\n"

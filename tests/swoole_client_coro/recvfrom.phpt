@@ -1,5 +1,5 @@
 --TEST--
-swoole_client_coro: sendto
+swoole_client_coro: recvfrom 1
 --SKIPIF--
 <?php require __DIR__ . '/../include/skipif.inc'; ?>
 --FILE--
@@ -25,7 +25,7 @@ go(function () use ($free_port) {
     Assert::same($port, $free_port);
 });
 
-swoole_event::wait();
+Swoole\Event::wait();
 ?>
 --EXPECT--
 hello

@@ -10,32 +10,38 @@
   | to obtain it through the world-wide-web, please send a note to       |
   | license@swoole.com so we can mail you a copy immediately.            |
   +----------------------------------------------------------------------+
-  | Author: Tianfeng Han  <mikan.tenny@gmail.com>                        |
+  | Author: Tianfeng Han  <rango@swoole.com>                             |
   +----------------------------------------------------------------------+
 */
 
 #pragma once
 
 #include "swoole.h"
+
 #include <signal.h>
 
-typedef void (*swSignalHandler)(int);
+namespace swoole {
+typedef void (*SignalHandler)(int);
 
-struct swSignal {
-    swSignalHandler handler;
+struct Signal {
+    SignalHandler handler;
     uint16_t signo;
     bool activated;
 };
+}  // namespace swoole
+
+typedef swoole::SignalHandler swSignalHandler;
 
 #ifdef HAVE_SIGNALFD
-void swSignalfd_init();
-int swSignalfd_setup(swoole::Reactor *reactor);
+void swoole_signalfd_init();
 #endif
 
-swSignalHandler swSignal_set(int signo, swSignalHandler func);
-swSignalHandler swSignal_set(int signo, swSignalHandler func, int restart, int mask);
-swSignalHandler swSignal_get_handler(int signo);
-void swSignal_clear(void);
-void swSignal_none(void);
-char *swSignal_str(int sig);
-void swSignal_callback(int signo);
+SW_API swSignalHandler swoole_signal_set(int signo, swSignalHandler func);
+SW_API bool swoole_signal_isset(int signo);
+SW_API swSignalHandler swoole_signal_set(int signo, swSignalHandler func, int restart, int mask);
+SW_API swSignalHandler swoole_signal_get_handler(int signo);
+
+SW_API void swoole_signal_clear(void);
+SW_API void swoole_signal_block_all(void);
+SW_API char *swoole_signal_to_str(int sig);
+SW_API void swoole_signal_callback(int signo);

@@ -1,5 +1,5 @@
 --TEST--
-swoole_http_server: issue 2360 (swoole_http_server silently fails to read requests)
+swoole_http_server: issue 2360 (Swoole\Http\Server silently fails to read requests)
 --SKIPIF--
 <?php require __DIR__ . '/../include/skipif.inc'; ?>
 --FILE--
@@ -35,7 +35,7 @@ $pm->parentFunc = function () use ($pm) {
     echo "DONE\n";
 };
 $pm->childFunc = function () use ($pm) {
-    $server = new Swoole\Http\Server('127.0.0.1', $pm->getFreePort());
+    $server = new Swoole\Http\Server('127.0.0.1', $pm->getFreePort(), SWOOLE_PROCESS);
     $server->set([
         'log_file' => '/dev/null',
         'socket_buffer_size' => SOCKET_BUFFER_SIZE

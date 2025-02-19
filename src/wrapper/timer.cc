@@ -10,7 +10,7 @@
   | to obtain it through the world-wide-web, please send a note to       |
   | license@swoole.com so we can mail you a copy immediately.            |
   +----------------------------------------------------------------------+
-  | Author: Tianfeng Han  <mikan.tenny@gmail.com>                        |
+  | Author: Tianfeng Han  <rango@swoole.com>                             |
   +----------------------------------------------------------------------+
 */
 
@@ -25,8 +25,20 @@ Timer *sw_timer() {
 }
 #endif
 
+bool swoole_timer_is_available() {
+    return SwooleTG.timer != nullptr;
+}
+
+TimerNode *swoole_timer_add(double timeout, bool persistent, const TimerCallback &callback, void *private_data) {
+    if (timeout < SW_TIMER_MIN_SEC) {
+        return swoole_timer_add(1L, persistent, callback, private_data);
+    }
+
+    return swoole_timer_add((long) (timeout * 1000), persistent, callback, private_data);
+}
+
 TimerNode *swoole_timer_add(long ms, bool persistent, const TimerCallback &callback, void *private_data) {
-    if (sw_unlikely(SwooleTG.timer == nullptr)) {
+    if (sw_unlikely(!swoole_timer_is_available())) {
         SwooleTG.timer = new Timer();
         if (sw_unlikely(!SwooleTG.timer->init())) {
             delete SwooleTG.timer;
@@ -38,16 +50,24 @@ TimerNode *swoole_timer_add(long ms, bool persistent, const TimerCallback &callb
 }
 
 bool swoole_timer_del(TimerNode *tnode) {
+    if (!swoole_timer_is_available()) {
+        swoole_warning("timer is not available");
+        return false;
+    }
     return SwooleTG.timer->remove(tnode);
 }
 
 void swoole_timer_delay(TimerNode *tnode, long delay_ms) {
+    if (!swoole_timer_is_available()) {
+        swoole_warning("timer is not available");
+        return;
+    }
     return SwooleTG.timer->delay(tnode, delay_ms);
 }
 
 long swoole_timer_after(long ms, const TimerCallback &callback, void *private_data) {
     if (ms <= 0) {
-        swWarn("Timer must be greater than 0");
+        swoole_warning("Timer must be greater than 0");
         return SW_ERR;
     }
     TimerNode *tnode = swoole_timer_add(ms, false, callback, private_data);
@@ -60,7 +80,7 @@ long swoole_timer_after(long ms, const TimerCallback &callback, void *private_da
 
 long swoole_timer_tick(long ms, const TimerCallback &callback, void *private_data) {
     if (ms <= 0) {
-        swWarn("Timer must be greater than 0");
+        swoole_warning("Timer must be greater than 0");
         return SW_ERR;
     }
     TimerNode *tnode = swoole_timer_add(ms, true, callback, private_data);
@@ -72,8 +92,8 @@ long swoole_timer_tick(long ms, const TimerCallback &callback, void *private_dat
 }
 
 bool swoole_timer_exists(long timer_id) {
-    if (!SwooleTG.timer) {
-        swWarn("no timer");
+    if (!swoole_timer_is_available()) {
+        swoole_warning("timer is not available");
         return false;
     }
     TimerNode *tnode = SwooleTG.timer->get(timer_id);
@@ -81,28 +101,32 @@ bool swoole_timer_exists(long timer_id) {
 }
 
 bool swoole_timer_clear(long timer_id) {
+    if (!swoole_timer_is_available()) {
+        swoole_warning("timer is not available");
+        return false;
+    }
     return SwooleTG.timer->remove(SwooleTG.timer->get(timer_id));
 }
 
 TimerNode *swoole_timer_get(long timer_id) {
-    if (!SwooleTG.timer) {
-        swWarn("no timer");
+    if (!swoole_timer_is_available()) {
+        swoole_warning("timer is not available");
         return nullptr;
     }
     return SwooleTG.timer->get(timer_id);
 }
 
 void swoole_timer_free() {
-    if (!SwooleTG.timer) {
+    if (!swoole_timer_is_available()) {
+        swoole_warning("timer is not available");
         return;
     }
     delete SwooleTG.timer;
     SwooleTG.timer = nullptr;
-    SwooleG.signal_alarm = false;
 }
 
 int swoole_timer_select() {
-    if (!SwooleTG.timer) {
+    if (!swoole_timer_is_available()) {
         return SW_ERR;
     }
     return SwooleTG.timer->select();

@@ -8,8 +8,14 @@ skip_if_offline();
 --FILE--
 <?php
 require __DIR__ . '/../include/bootstrap.php';
-Co\run(function () {
-    $map = IS_IN_TRAVIS ? [
+
+use  Swoole\Coroutine\System;
+use  Swoole\Coroutine;
+
+use function Swoole\Coroutine\run;
+
+run(function () {
+    $map = IS_IN_CI ? [
         'www.google.com' => null,
         'www.youtube.com' => null,
         'www.facebook.com' => null,
@@ -22,7 +28,7 @@ Co\run(function () {
     $first_time = microtime(true);
     for ($n = MAX_CONCURRENCY_LOW; $n--;) {
         foreach ($map as $host => &$ip) {
-            $ip = co::gethostbyname($host);
+            $ip = System::gethostbyname($host);
             Assert::assert(preg_match(IP_REGEX, $ip));
         }
     }
@@ -33,7 +39,7 @@ Co\run(function () {
     $cache_time = microtime(true);
     for ($n = MAX_CONCURRENCY_LOW; $n--;) {
         foreach ($map as $host => $ip) {
-            $_ip = co::gethostbyname($host);
+            $_ip = System::gethostbyname($host);
             Assert::same($ip, $_ip);
         }
     }
@@ -42,7 +48,7 @@ Co\run(function () {
     $no_cache_time = microtime(true);
     for ($n = MAX_CONCURRENCY_LOW; $n--;) {
         swoole_clear_dns_cache();
-        $ip = co::gethostbyname(array_rand($map));
+        $ip = System::gethostbyname(array_rand($map));
         Assert::assert(preg_match(IP_REGEX, $ip));
     }
     $no_cache_time = microtime(true) - $no_cache_time;
@@ -52,7 +58,7 @@ Co\run(function () {
     for ($c = MAX_CONCURRENCY_LOW; $c--;) {
         go(function () use ($map, $chan) {
             swoole_clear_dns_cache();
-            $ip = co::gethostbyname(array_rand($map));
+            $ip = System::gethostbyname(array_rand($map));
             Assert::assert(filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4));
             $chan->push(Assert::assert(preg_match(IP_REGEX, $ip)));
         });
@@ -63,7 +69,7 @@ Co\run(function () {
     $no_cache_multi_time = microtime(true) - $no_cache_multi_time;
 
     phpt_var_dump($first_time, $cache_time, $no_cache_time, $no_cache_multi_time);
-    if (!IS_IN_TRAVIS) {
+    if (!IS_IN_CI) {
         Assert::assert($cache_time < 0.01);
         Assert::assert($cache_time < $first_time);
         Assert::assert($cache_time < $no_cache_time);

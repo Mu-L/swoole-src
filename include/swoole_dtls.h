@@ -10,7 +10,7 @@
   | to obtain it through the world-wide-web, please send a note to       |
   | license@swoole.com so we can mail you a copy immediately.            |
   +----------------------------------------------------------------------+
-  | Author: Tianfeng Han  <mikan.tenny@gmail.com>                        |
+  | Author: Tianfeng Han  <rango@swoole.com>                             |
   +----------------------------------------------------------------------+
 */
 
@@ -25,6 +25,7 @@
 namespace swoole {
 namespace dtls {
 //-------------------------------------------------------------------------------
+using Socket = network::Socket;
 
 int BIO_write(BIO *b, const char *data, int dlen);
 int BIO_read(BIO *b, char *data, int dlen);
@@ -40,13 +41,13 @@ struct Buffer {
 };
 
 struct Session {
-    SSL_CTX *ctx;
+    SSLContext *ctx;
     bool listened = false;
-    swSocket *socket;
+    Socket *socket;
     std::deque<Buffer *> rxqueue;
     bool peek_mode = false;
 
-    Session(swSocket *_sock, SSL_CTX *_ctx) {
+    Session(Socket *_sock, SSLContext *_ctx) {
         socket = _sock;
         ctx = _ctx;
     }
@@ -55,7 +56,7 @@ struct Session {
         while (!rxqueue.empty()) {
             Buffer *buffer = rxqueue.front();
             rxqueue.pop_front();
-            delete buffer;
+            sw_free(buffer);
         }
     }
 
@@ -64,11 +65,11 @@ struct Session {
 
     void append(const char *data, ssize_t len);
 
-    inline void append(Buffer *buffer) {
+    void append(Buffer *buffer) {
         rxqueue.push_back(buffer);
     }
 
-    inline size_t get_buffer_length() {
+    size_t get_buffer_length() {
         size_t total_length = 0;
         for (auto i : rxqueue) {
             total_length += i->length;

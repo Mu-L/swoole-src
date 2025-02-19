@@ -10,15 +10,13 @@
   | to obtain it through the world-wide-web, please send a note to       |
   | license@swoole.com so we can mail you a copy immediately.            |
   +----------------------------------------------------------------------+
-  | Author: Tianfeng Han  <mikan.tenny@gmail.com>                        |
+  | Author: Tianfeng Han  <rango@swoole.com>                             |
   +----------------------------------------------------------------------+
 */
 
 #include "php_swoole_cxx.h"
-#include "php_streams.h"
-#include "php_network.h"
-
 #include "php_swoole_process.h"
+
 #include "swoole_server.h"
 #include "swoole_msg_queue.h"
 #include "swoole_signal.h"
@@ -26,13 +24,18 @@
 #include <sys/ipc.h>
 #include <sys/resource.h>
 
+BEGIN_EXTERN_C()
+#include "stubs/php_swoole_process_arginfo.h"
+END_EXTERN_C()
+
 using namespace swoole;
 
 zend_class_entry *swoole_process_ce;
 static zend_object_handlers swoole_process_handlers;
 
-static uint32_t php_swoole_worker_round_id = 0;
-static zend_fcall_info_cache *signal_fci_caches[SW_SIGNO_MAX] = {};
+static uint32_t round_process_id = 0;
+static thread_local uint32_t server_user_worker_id = 0;
+static zend::Callable *signal_fci_caches[SW_SIGNO_MAX] = {};
 
 struct ProcessObject {
     Worker *worker;
@@ -43,14 +46,18 @@ static sw_inline ProcessObject *php_swoole_process_fetch_object(zend_object *obj
     return (ProcessObject *) ((char *) obj - swoole_process_handlers.offset);
 }
 
-static sw_inline Worker *php_swoole_process_get_worker(zval *zobject) {
+static sw_inline ProcessObject *php_swoole_process_fetch_object(zval *zobj) {
+    return php_swoole_process_fetch_object(Z_OBJ_P(zobj));
+}
+
+Worker *php_swoole_process_get_worker(zval *zobject) {
     return php_swoole_process_fetch_object(Z_OBJ_P(zobject))->worker;
 }
 
 Worker *php_swoole_process_get_and_check_worker(zval *zobject) {
     Worker *worker = php_swoole_process_get_worker(zobject);
-    if (!worker) {
-        php_swoole_fatal_error(E_ERROR, "you must call Process constructor first");
+    if (UNEXPECTED(!worker)) {
+        swoole_fatal_error(SW_ERROR_WRONG_OPERATION, "must call constructor first");
     }
     return worker;
 }
@@ -65,19 +72,17 @@ static void php_swoole_process_free_object(zend_object *object) {
 
     if (worker) {
         UnixSocket *_pipe = worker->pipe_object;
-        if (_pipe) {
+        if (_pipe && !worker->shared) {
             delete _pipe;
         }
-
         if (worker->queue) {
             delete worker->queue;
         }
-
         zend::Process *proc = (zend::Process *) worker->ptr2;
         if (proc) {
             delete proc;
         }
-        efree(worker);
+        delete worker;
     }
 
     zend_object_std_dtor(object);
@@ -106,6 +111,7 @@ static PHP_METHOD(swoole_process, wait);
 static PHP_METHOD(swoole_process, daemon);
 #ifdef HAVE_CPU_AFFINITY
 static PHP_METHOD(swoole_process, setAffinity);
+static PHP_METHOD(swoole_process, getAffinity);
 #endif
 static PHP_METHOD(swoole_process, set);
 static PHP_METHOD(swoole_process, setTimeout);
@@ -124,143 +130,46 @@ SW_EXTERN_C_END
 static void php_swoole_onSignal(int signo);
 
 // clang-format off
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_swoole_process_construct, 0, 0, 1)
-    ZEND_ARG_CALLABLE_INFO(0, callback, 0)
-    ZEND_ARG_INFO(0, redirect_stdin_and_stdout)
-    ZEND_ARG_INFO(0, pipe_type)
-    ZEND_ARG_INFO(0, enable_coroutine)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_swoole_process_void, 0, 0, 0)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_swoole_process_wait, 0, 0, 0)
-    ZEND_ARG_INFO(0, blocking)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_swoole_process_signal, 0, 0, 2)
-    ZEND_ARG_INFO(0, signal_no)
-    ZEND_ARG_INFO(0, callback)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_swoole_process_alarm, 0, 0, 1)
-    ZEND_ARG_INFO(0, usec)
-    ZEND_ARG_INFO(0, type)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_swoole_process_kill, 0, 0, 1)
-    ZEND_ARG_INFO(0, pid)
-    ZEND_ARG_INFO(0, signal_no)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_swoole_process_daemon, 0, 0, 0)
-    ZEND_ARG_INFO(0, nochdir)
-    ZEND_ARG_INFO(0, noclose)
-    ZEND_ARG_INFO(0, pipes)
-ZEND_END_ARG_INFO()
-
-#ifdef HAVE_CPU_AFFINITY
-ZEND_BEGIN_ARG_INFO_EX(arginfo_swoole_process_setAffinity, 0, 0, 1)
-    ZEND_ARG_ARRAY_INFO(0, cpu_settings, 0)
-ZEND_END_ARG_INFO()
-#endif
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_swoole_process_setPriority, 0, 0, 2)
-    ZEND_ARG_INFO(0, which)
-    ZEND_ARG_INFO(0, priority)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_swoole_process_getPriority, 0, 0, 1)
-    ZEND_ARG_INFO(0, which)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_swoole_process_set, 0, 0, 1)
-    ZEND_ARG_ARRAY_INFO(0, settings, 0)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_swoole_process_setTimeout, 0, 0, 1)
-    ZEND_ARG_INFO(0, seconds)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_swoole_process_setBlocking, 0, 0, 1)
-    ZEND_ARG_INFO(0, blocking)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_swoole_process_useQueue, 0, 0, 0)
-    ZEND_ARG_INFO(0, key)
-    ZEND_ARG_INFO(0, mode)
-    ZEND_ARG_INFO(0, capacity)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_swoole_process_write, 0, 0, 1)
-    ZEND_ARG_INFO(0, data)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_swoole_process_read, 0, 0, 0)
-    ZEND_ARG_INFO(0, size)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_swoole_process_push, 0, 0, 1)
-    ZEND_ARG_INFO(0, data)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_swoole_process_pop, 0, 0, 0)
-    ZEND_ARG_INFO(0, size)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_swoole_process_exit, 0, 0, 0)
-    ZEND_ARG_INFO(0, exit_code)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_swoole_process_exec, 0, 0, 2)
-    ZEND_ARG_INFO(0, exec_file)
-    ZEND_ARG_INFO(0, args)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_swoole_process_name, 0, 0, 1)
-    ZEND_ARG_INFO(0, process_name)
-ZEND_END_ARG_INFO()
-
 #define MSGQUEUE_NOWAIT (1 << 8)
 
 static const zend_function_entry swoole_process_methods[] =
 {
-    PHP_ME(swoole_process, __construct, arginfo_swoole_process_construct, ZEND_ACC_PUBLIC)
-    PHP_ME(swoole_process, __destruct, arginfo_swoole_process_void, ZEND_ACC_PUBLIC)
-    PHP_ME(swoole_process, wait, arginfo_swoole_process_wait, ZEND_ACC_PUBLIC | ZEND_ACC_STATIC)
-    PHP_ME(swoole_process, signal, arginfo_swoole_process_signal, ZEND_ACC_PUBLIC | ZEND_ACC_STATIC)
-    PHP_ME(swoole_process, alarm, arginfo_swoole_process_alarm, ZEND_ACC_PUBLIC | ZEND_ACC_STATIC)
-    PHP_ME(swoole_process, kill, arginfo_swoole_process_kill, ZEND_ACC_PUBLIC | ZEND_ACC_STATIC)
-    PHP_ME(swoole_process, daemon, arginfo_swoole_process_daemon, ZEND_ACC_PUBLIC | ZEND_ACC_STATIC)
+    PHP_ME(swoole_process, __construct, arginfo_class_Swoole_Process___construct, ZEND_ACC_PUBLIC)
+    PHP_ME(swoole_process, __destruct,  arginfo_class_Swoole_Process___destruct,  ZEND_ACC_PUBLIC)
+    PHP_ME(swoole_process, wait,        arginfo_class_Swoole_Process_wait,        ZEND_ACC_PUBLIC | ZEND_ACC_STATIC)
+    PHP_ME(swoole_process, signal,      arginfo_class_Swoole_Process_signal,      ZEND_ACC_PUBLIC | ZEND_ACC_STATIC)
+    PHP_ME(swoole_process, alarm,       arginfo_class_Swoole_Process_alarm,       ZEND_ACC_PUBLIC | ZEND_ACC_STATIC)
+    PHP_ME(swoole_process, kill,        arginfo_class_Swoole_Process_kill,        ZEND_ACC_PUBLIC | ZEND_ACC_STATIC)
+    PHP_ME(swoole_process, daemon,      arginfo_class_Swoole_Process_daemon,      ZEND_ACC_PUBLIC | ZEND_ACC_STATIC)
 #ifdef HAVE_CPU_AFFINITY
-    PHP_ME(swoole_process, setAffinity, arginfo_swoole_process_setAffinity, ZEND_ACC_PUBLIC | ZEND_ACC_STATIC)
+    PHP_ME(swoole_process, setAffinity, arginfo_class_Swoole_Process_setAffinity, ZEND_ACC_PUBLIC | ZEND_ACC_STATIC)
+    PHP_ME(swoole_process, getAffinity, arginfo_class_Swoole_Process_getAffinity, ZEND_ACC_PUBLIC | ZEND_ACC_STATIC)
 #endif
-    PHP_ME(swoole_process, setPriority, arginfo_swoole_process_setPriority, ZEND_ACC_PUBLIC)
-    PHP_ME(swoole_process, getPriority, arginfo_swoole_process_getPriority, ZEND_ACC_PUBLIC)
-    PHP_ME(swoole_process, set, arginfo_swoole_process_set, ZEND_ACC_PUBLIC)
-    PHP_ME(swoole_process, setTimeout, arginfo_swoole_process_setTimeout, ZEND_ACC_PUBLIC)
-    PHP_ME(swoole_process, setBlocking, arginfo_swoole_process_setBlocking, ZEND_ACC_PUBLIC)
-    PHP_ME(swoole_process, useQueue, arginfo_swoole_process_useQueue, ZEND_ACC_PUBLIC)
-    PHP_ME(swoole_process, statQueue, arginfo_swoole_process_void, ZEND_ACC_PUBLIC)
-    PHP_ME(swoole_process, freeQueue, arginfo_swoole_process_void, ZEND_ACC_PUBLIC)
-    PHP_ME(swoole_process, start, arginfo_swoole_process_void, ZEND_ACC_PUBLIC)
-    PHP_ME(swoole_process, write, arginfo_swoole_process_write, ZEND_ACC_PUBLIC)
-    PHP_ME(swoole_process, close, arginfo_swoole_process_void, ZEND_ACC_PUBLIC)
-    PHP_ME(swoole_process, read, arginfo_swoole_process_read, ZEND_ACC_PUBLIC)
-    PHP_ME(swoole_process, push, arginfo_swoole_process_push, ZEND_ACC_PUBLIC)
-    PHP_ME(swoole_process, pop, arginfo_swoole_process_pop, ZEND_ACC_PUBLIC)
-    PHP_ME(swoole_process, exit, arginfo_swoole_process_exit, ZEND_ACC_PUBLIC)
-    PHP_ME(swoole_process, exec, arginfo_swoole_process_exec, ZEND_ACC_PUBLIC)
-    PHP_ME(swoole_process, exportSocket, arginfo_swoole_process_void, ZEND_ACC_PUBLIC)
-    PHP_FALIAS(name, swoole_set_process_name, arginfo_swoole_process_name)
+    PHP_ME(swoole_process, setPriority,       arginfo_class_Swoole_Process_setPriority,  ZEND_ACC_PUBLIC)
+    PHP_ME(swoole_process, getPriority,       arginfo_class_Swoole_Process_getPriority,  ZEND_ACC_PUBLIC)
+    PHP_ME(swoole_process, set,               arginfo_class_Swoole_Process_set,          ZEND_ACC_PUBLIC)
+    PHP_ME(swoole_process, setTimeout,        arginfo_class_Swoole_Process_setTimeout,   ZEND_ACC_PUBLIC)
+    PHP_ME(swoole_process, setBlocking,       arginfo_class_Swoole_Process_setBlocking,  ZEND_ACC_PUBLIC)
+    PHP_ME(swoole_process, useQueue,          arginfo_class_Swoole_Process_useQueue,     ZEND_ACC_PUBLIC)
+    PHP_ME(swoole_process, statQueue,         arginfo_class_Swoole_Process_statQueue,    ZEND_ACC_PUBLIC)
+    PHP_ME(swoole_process, freeQueue,         arginfo_class_Swoole_Process_freeQueue,    ZEND_ACC_PUBLIC)
+    PHP_ME(swoole_process, start,             arginfo_class_Swoole_Process_start,        ZEND_ACC_PUBLIC)
+    PHP_ME(swoole_process, write,             arginfo_class_Swoole_Process_write,        ZEND_ACC_PUBLIC)
+    PHP_ME(swoole_process, close,             arginfo_class_Swoole_Process_close,        ZEND_ACC_PUBLIC)
+    PHP_ME(swoole_process, read,              arginfo_class_Swoole_Process_read,         ZEND_ACC_PUBLIC)
+    PHP_ME(swoole_process, push,              arginfo_class_Swoole_Process_push,         ZEND_ACC_PUBLIC)
+    PHP_ME(swoole_process, pop,               arginfo_class_Swoole_Process_pop,          ZEND_ACC_PUBLIC)
+    PHP_ME(swoole_process, exit,              arginfo_class_Swoole_Process_exit,         ZEND_ACC_PUBLIC)
+    PHP_ME(swoole_process, exec,              arginfo_class_Swoole_Process_exec,         ZEND_ACC_PUBLIC)
+    PHP_ME(swoole_process, exportSocket,      arginfo_class_Swoole_Process_exportSocket, ZEND_ACC_PUBLIC)
+    PHP_FALIAS(name, swoole_set_process_name, arginfo_class_Swoole_Process_name)
     PHP_FE_END
 };
 // clang-format on
 
 void php_swoole_process_minit(int module_number) {
-    SW_INIT_CLASS_ENTRY(swoole_process, "Swoole\\Process", "swoole_process", nullptr, swoole_process_methods);
-    SW_SET_CLASS_SERIALIZABLE(swoole_process, zend_class_serialize_deny, zend_class_unserialize_deny);
+    SW_INIT_CLASS_ENTRY(swoole_process, "Swoole\\Process", nullptr, swoole_process_methods);
+    SW_SET_CLASS_NOT_SERIALIZABLE(swoole_process);
     SW_SET_CLASS_CLONEABLE(swoole_process, sw_zend_class_clone_deny);
     SW_SET_CLASS_UNSET_PROPERTY_HANDLER(swoole_process, sw_zend_class_unset_property_deny);
     SW_SET_CLASS_CUSTOM_OBJECT(
@@ -327,28 +236,33 @@ void php_swoole_process_minit(int module_number) {
         REGISTER_LONG_CONSTANT("PRIO_PGRP", (zend_long) PRIO_PGRP, CONST_CS | CONST_PERSISTENT);
         REGISTER_LONG_CONSTANT("PRIO_USER", (zend_long) PRIO_USER, CONST_CS | CONST_PERSISTENT);
     }
+
+    SW_REGISTER_LONG_CONSTANT("SWOOLE_MSGQUEUE_ORIENT", SW_MSGQUEUE_ORIENT);
+    SW_REGISTER_LONG_CONSTANT("SWOOLE_MSGQUEUE_BALANCE", SW_MSGQUEUE_BALANCE);
 }
 
 static PHP_METHOD(swoole_process, __construct) {
-    Worker *process = php_swoole_process_get_worker(ZEND_THIS);
+    auto po = php_swoole_process_fetch_object(ZEND_THIS);
+    Server *server = sw_server();
 
-    if (process) {
-        php_swoole_fatal_error(E_ERROR, "Constructor of %s can only be called once", SW_Z_OBJCE_NAME_VAL_P(ZEND_THIS));
+    if (po->worker) {
+        zend_throw_error(NULL, "Constructor of %s can only be called once", SW_Z_OBJCE_NAME_VAL_P(ZEND_THIS));
+        RETURN_FALSE;
     }
 
     // only cli env
     if (!SWOOLE_G(cli)) {
-        php_swoole_fatal_error(E_ERROR, "%s can only be used in PHP CLI mode", SW_Z_OBJCE_NAME_VAL_P(ZEND_THIS));
+        zend_throw_error(NULL, "%s can only be used in PHP CLI mode", SW_Z_OBJCE_NAME_VAL_P(ZEND_THIS));
         RETURN_FALSE;
     }
 
-    if (sw_server() && sw_server()->is_started() && sw_server()->is_master()) {
-        php_swoole_fatal_error(E_ERROR, "%s can't be used in master process", SW_Z_OBJCE_NAME_VAL_P(ZEND_THIS));
+    if (server && server->is_started() && server->is_master()) {
+        zend_throw_error(NULL, "%s can't be used in master process", SW_Z_OBJCE_NAME_VAL_P(ZEND_THIS));
         RETURN_FALSE;
     }
 
-    if (SwooleTG.aio_init) {
-        php_swoole_fatal_error(E_ERROR, "unable to create %s with async-io threads", SW_Z_OBJCE_NAME_VAL_P(ZEND_THIS));
+    if (SwooleTG.async_threads) {
+        zend_throw_error(NULL, "unable to create %s with async-io threads", SW_Z_OBJCE_NAME_VAL_P(ZEND_THIS));
         RETURN_FALSE;
     }
 
@@ -356,6 +270,9 @@ static PHP_METHOD(swoole_process, __construct) {
     zend_bool redirect_stdin_and_stdout = 0;
     zend_long pipe_type = zend::PIPE_TYPE_DGRAM;
     zend_bool enable_coroutine = false;
+
+    po->worker = new Worker();
+    Worker *process = po->worker;
 
     ZEND_PARSE_PARAMETERS_START_EX(ZEND_PARSE_PARAMS_THROW, 1, 4)
     Z_PARAM_FUNC(func.fci, func.fci_cache);
@@ -365,45 +282,60 @@ static PHP_METHOD(swoole_process, __construct) {
     Z_PARAM_BOOL(enable_coroutine)
     ZEND_PARSE_PARAMETERS_END_EX(RETURN_FALSE);
 
-    process = (Worker *) ecalloc(1, sizeof(Worker));
-
-    uint32_t base = 1;
-    if (sw_server() && sw_server()->is_started()) {
-        base = sw_server()->worker_num + sw_server()->task_worker_num + sw_server()->user_worker_num;
-    }
-    if (php_swoole_worker_round_id == 0) {
-        php_swoole_worker_round_id = base;
-    }
-    process->id = php_swoole_worker_round_id++;
-
-    if (redirect_stdin_and_stdout) {
-        process->redirect_stdin = true;
-        process->redirect_stdout = true;
-        process->redirect_stderr = true;
-        /**
-         * Forced to use stream pipe
-         */
-        pipe_type = zend::PIPE_TYPE_STREAM;
-    }
-
-    if (pipe_type > 0) {
-        int socket_type = pipe_type == zend::PIPE_TYPE_STREAM ? SOCK_STREAM : SOCK_DGRAM;
-        UnixSocket *_pipe = new UnixSocket(true, socket_type);
-        if (!_pipe->ready()) {
-            zend_throw_exception(swoole_exception_ce, "failed to create unix soccket", errno);
-            delete _pipe;
-            efree(process);
-            RETURN_FALSE;
+    if (server && server->is_worker_thread()) {
+        Worker *shared_worker;
+        if (server->is_user_worker()) {
+            shared_worker = server->get_worker(swoole_get_process_id());
+        } else {
+            shared_worker = server->get_worker((server_user_worker_id++) + server->get_core_worker_num());
+        }
+        *process = *shared_worker;
+        process->shared = true;
+        if (server->is_user_worker()) {
+            process->pipe_current = process->pipe_worker;
+        } else {
+            process->pipe_current = process->pipe_master;
+        }
+    } else {
+        if (redirect_stdin_and_stdout) {
+            process->redirect_stdin = true;
+            process->redirect_stdout = true;
+            process->redirect_stderr = true;
+            /**
+             * Forced to use stream pipe
+             */
+            pipe_type = zend::PIPE_TYPE_STREAM;
         }
 
-        process->pipe_master = _pipe->get_socket(true);
-        process->pipe_worker = _pipe->get_socket(false);
+        uint32_t base = 1;
+        if (server && server->is_started()) {
+            base = server->get_all_worker_num();
+        }
+        if (round_process_id == 0) {
+            round_process_id = base;
+        }
+        process->id = round_process_id++;
+        process->shared = false;
 
-        process->pipe_object = _pipe;
-        process->pipe_current = process->pipe_master;
+        if (pipe_type > 0) {
+            int socket_type = pipe_type == zend::PIPE_TYPE_STREAM ? SOCK_STREAM : SOCK_DGRAM;
+            UnixSocket *_pipe = new UnixSocket(true, socket_type);
+            if (!_pipe->ready()) {
+                zend_throw_exception(swoole_exception_ce, "failed to create unix soccket", errno);
+                delete _pipe;
+                efree(process);
+                RETURN_FALSE;
+            }
 
-        zend_update_property_long(
-            swoole_process_ce, SW_Z8_OBJ_P(ZEND_THIS), ZEND_STRL("pipe"), process->pipe_master->fd);
+            process->pipe_master = _pipe->get_socket(true);
+            process->pipe_worker = _pipe->get_socket(false);
+
+            process->pipe_object = _pipe;
+            process->pipe_current = process->pipe_master;
+
+            zend_update_property_long(
+                swoole_process_ce, SW_Z8_OBJ_P(ZEND_THIS), ZEND_STRL("pipe"), process->pipe_master->fd);
+        }
     }
 
     zend::Process *proc = new zend::Process((enum zend::PipeType) pipe_type, enable_coroutine);
@@ -417,24 +349,18 @@ static PHP_METHOD(swoole_process, __construct) {
 static PHP_METHOD(swoole_process, __destruct) {}
 
 static PHP_METHOD(swoole_process, wait) {
-    int status;
     zend_bool blocking = 1;
 
     if (zend_parse_parameters(ZEND_NUM_ARGS(), "|b", &blocking) == FAILURE) {
         RETURN_FALSE;
     }
 
-    int options = 0;
-    if (!blocking) {
-        options |= WNOHANG;
-    }
-
-    pid_t pid = swoole_waitpid(-1, &status, options);
-    if (pid > 0) {
+    auto exit_status = swoole::wait_process(-1, blocking ? 0 : WNOHANG);
+    if (exit_status.get_pid() > 0) {
         array_init(return_value);
-        add_assoc_long(return_value, "pid", pid);
-        add_assoc_long(return_value, "code", WEXITSTATUS(status));
-        add_assoc_long(return_value, "signal", WTERMSIG(status));
+        add_assoc_long(return_value, "pid", exit_status.get_pid());
+        add_assoc_long(return_value, "code", exit_status.get_code());
+        add_assoc_long(return_value, "signal", exit_status.get_signal());
     } else {
         RETURN_FALSE;
     }
@@ -442,7 +368,7 @@ static PHP_METHOD(swoole_process, wait) {
 
 static PHP_METHOD(swoole_process, useQueue) {
     long msgkey = 0;
-    long mode = 2;
+    long mode = SW_MSGQUEUE_BALANCE;
     long capacity = -1;
 
     if (zend_parse_parameters(ZEND_NUM_ARGS(), "|lll", &msgkey, &mode, &capacity) == FAILURE) {
@@ -468,7 +394,7 @@ static PHP_METHOD(swoole_process, useQueue) {
         queue->set_capacity(capacity);
     }
     process->queue = queue;
-    process->ipc_mode = mode;
+    process->msgqueue_mode = mode;
     zend_update_property_long(swoole_process_ce, SW_Z8_OBJ_P(ZEND_THIS), ZEND_STRL("msgQueueId"), queue->get_id());
     zend_update_property_long(swoole_process_ce, SW_Z8_OBJ_P(ZEND_THIS), ZEND_STRL("msgQueueKey"), msgkey);
     RETURN_TRUE;
@@ -514,7 +440,7 @@ static PHP_METHOD(swoole_process, kill) {
     int ret = swoole_kill((int) pid, (int) sig);
     if (ret < 0) {
         if (!(sig == 0 && errno == ESRCH)) {
-            php_swoole_sys_error(E_WARNING, "swKill(%d, %d) failed", (int) pid, (int) sig);
+            php_swoole_sys_error(E_WARNING, "kill(%d, %d) failed", (int) pid, (int) sig);
         }
         RETURN_FALSE;
     }
@@ -522,9 +448,10 @@ static PHP_METHOD(swoole_process, kill) {
 }
 
 static PHP_METHOD(swoole_process, signal) {
+    SW_MUST_BE_MAIN_THREAD();
     zend_long signo = 0;
     zval *zcallback = nullptr;
-    zend_fcall_info_cache *fci_cache = nullptr;
+    zend::Callable *fci_cache = nullptr;
 
     ZEND_PARSE_PARAMETERS_START(1, 2)
     Z_PARAM_LONG(signo)
@@ -542,10 +469,7 @@ static PHP_METHOD(swoole_process, signal) {
         RETURN_FALSE;
     }
 
-    php_swoole_check_reactor();
-
-    swSignalHandler handler = swSignal_get_handler(signo);
-
+    swSignalHandler handler = swoole_signal_get_handler(signo);
     if (handler && handler != php_swoole_onSignal) {
         php_swoole_fatal_error(
             E_WARNING, "signal [" ZEND_LONG_FMT "] processor has been registered by the system", signo);
@@ -555,9 +479,13 @@ static PHP_METHOD(swoole_process, signal) {
     if (zcallback == nullptr) {
         fci_cache = signal_fci_caches[signo];
         if (fci_cache) {
-            swSignal_set(signo, nullptr);
+#ifdef SW_USE_THREAD_CONTEXT
+            swoole_event_defer([signo](void *) { swoole_signal_set(signo, nullptr); }, nullptr);
+#else
+            swoole_signal_set(signo, nullptr);
+#endif
             signal_fci_caches[signo] = nullptr;
-            swoole_event_defer(sw_zend_fci_cache_free, fci_cache);
+            swoole_event_defer(sw_callable_free, fci_cache);
             SwooleTG.signal_listener_num--;
             RETURN_TRUE;
         } else {
@@ -567,40 +495,49 @@ static PHP_METHOD(swoole_process, signal) {
     } else if (Z_TYPE_P(zcallback) == IS_LONG && Z_LVAL_P(zcallback) == (zend_long) SIG_IGN) {
         handler = nullptr;
     } else {
-        char *func_name;
-        fci_cache = (zend_fcall_info_cache *) ecalloc(1, sizeof(zend_fcall_info_cache));
-        if (!sw_zend_is_callable_ex(zcallback, nullptr, 0, &func_name, 0, fci_cache, nullptr)) {
-            php_swoole_error(E_WARNING, "function '%s' is not callable", func_name);
-            efree(func_name);
-            efree(fci_cache);
+        fci_cache = sw_callable_create(zcallback);
+        if (!fci_cache) {
             RETURN_FALSE;
         }
-        efree(func_name);
-        sw_zend_fci_cache_persist(fci_cache);
         handler = php_swoole_onSignal;
     }
 
-    // for swSignalfd_setup
-    SwooleTG.reactor->check_signalfd = true;
+    if (sw_server() && sw_server()->is_sync_process()) {
+        if (signal_fci_caches[signo]) {
+            sw_callable_free(signal_fci_caches[signo]);
+        } else {
+            SwooleTG.signal_listener_num++;
+        }
+        signal_fci_caches[signo] = fci_cache;
+#ifdef SW_USE_THREAD_CONTEXT
+        swoole_event_defer([signo, handler](void *) { swoole_signal_set(signo, handler); }, nullptr);
+#else
+        swoole_signal_set(signo, handler);
+#endif
+        RETURN_TRUE;
+    }
+
+    php_swoole_check_reactor();
     if (!SwooleTG.reactor->isset_exit_condition(Reactor::EXIT_CONDITION_SIGNAL_LISTENER)) {
         SwooleTG.reactor->set_exit_condition(Reactor::EXIT_CONDITION_SIGNAL_LISTENER,
-                                             [](Reactor *reactor, int &event_num) -> bool {
+                                             [](Reactor *reactor, size_t &event_num) -> bool {
                                                  return SwooleTG.signal_listener_num == 0 or !SwooleG.wait_signal;
                                              });
     }
 
     if (signal_fci_caches[signo]) {
         // free the old fci_cache
-        swoole_event_defer(sw_zend_fci_cache_free, signal_fci_caches[signo]);
+        swoole_event_defer(sw_callable_free, signal_fci_caches[signo]);
     } else {
         SwooleTG.signal_listener_num++;
     }
     signal_fci_caches[signo] = fci_cache;
 
-    // use user settings
-    SwooleG.use_signalfd = SwooleG.enable_signalfd;
-
-    swSignal_set(signo, handler);
+#ifdef SW_USE_THREAD_CONTEXT
+    swoole_event_defer([signo, handler](void *) { swoole_signal_set(signo, handler); }, nullptr);
+#else
+    swoole_signal_set(signo, handler);
+#endif
 
     RETURN_TRUE;
 }
@@ -653,13 +590,13 @@ static PHP_METHOD(swoole_process, alarm) {
  * safe signal
  */
 static void php_swoole_onSignal(int signo) {
-    zend_fcall_info_cache *fci_cache = signal_fci_caches[signo];
+    auto fci_cache = signal_fci_caches[signo];
 
     if (fci_cache) {
         zval argv[1];
-        ZVAL_LONG(& argv[0], signo);
+        ZVAL_LONG(&argv[0], signo);
 
-        if (UNEXPECTED(!zend::function::call(fci_cache, 1, argv, nullptr, php_swoole_is_enable_coroutine()))) {
+        if (UNEXPECTED(!zend::function::call(fci_cache->ptr(), 1, argv, nullptr, php_swoole_is_enable_coroutine()))) {
             php_swoole_fatal_error(
                 E_WARNING, "%s: signal [%d] handler error", ZSTR_VAL(swoole_process_ce->name), signo);
         }
@@ -676,25 +613,27 @@ zend_bool php_swoole_signal_isset_handler(int signo) {
 
 void php_swoole_process_clean() {
     for (int i = 0; i < SW_SIGNO_MAX; i++) {
-        zend_fcall_info_cache *fci_cache = signal_fci_caches[i];
+        auto fci_cache = signal_fci_caches[i];
         if (fci_cache) {
-            sw_zend_fci_cache_discard(fci_cache);
-            efree(fci_cache);
+            sw_callable_free(fci_cache);
             signal_fci_caches[i] = nullptr;
         }
     }
-
-    if (SwooleG.process_type != SW_PROCESS_USERWORKER) {
-        SwooleG.process_type = 0;
+#ifndef SW_THREAD
+    if (swoole_get_process_type() != SW_PROCESS_USERWORKER) {
+        swoole_set_process_type(0);
     }
+#endif
+}
+
+void php_swoole_process_rshutdown() {
+    php_swoole_process_clean();
 }
 
 int php_swoole_process_start(Worker *process, zval *zobject) {
     zval *zcallback = sw_zend_read_property_ex(swoole_process_ce, zobject, SW_ZSTR_KNOWN(SW_ZEND_STR_CALLBACK), 0);
-    zend_fcall_info_cache fci_cache;
-
-    if (!sw_zend_is_callable_ex(zcallback, nullptr, 0, nullptr, 0, &fci_cache, nullptr)) {
-        php_swoole_fatal_error(E_ERROR, "Illegal callback function of %s", SW_Z_OBJCE_NAME_VAL_P(zobject));
+    auto fci_cache = sw_callable_create(zcallback);
+    if (!fci_cache) {
         return SW_ERR;
     }
 
@@ -722,7 +661,7 @@ int php_swoole_process_start(Worker *process, zval *zobject) {
     }
 
     php_swoole_process_clean();
-    SwooleG.process_id = process->id;
+    swoole_set_process_id(process->id);
     SwooleWG.worker = process;
 
     zend_update_property_long(swoole_process_ce, SW_Z8_OBJ_P(zobject), ZEND_STRL("pid"), process->pid);
@@ -735,15 +674,16 @@ int php_swoole_process_start(Worker *process, zval *zobject) {
         return SW_ERR;
     }
     // main function
-    if (UNEXPECTED(!zend::function::call(&fci_cache, 1, zobject, nullptr, proc->enable_coroutine))) {
+    if (UNEXPECTED(!zend::function::call(fci_cache->ptr(), 1, zobject, nullptr, proc->enable_coroutine))) {
         php_swoole_error(E_WARNING, "%s->onStart handler error", SW_Z_OBJCE_NAME_VAL_P(zobject));
     }
     // eventloop start
     if (proc->enable_coroutine) {
         php_swoole_event_wait();
     }
+    sw_callable_free(fci_cache);
     // equivalent to exit
-    sw_zend_bailout();
+    zend_bailout();
 
     return SW_OK;
 }
@@ -779,10 +719,6 @@ static PHP_METHOD(swoole_process, read) {
         RETURN_FALSE;
     }
 
-    if (buf_size > 65536) {
-        buf_size = 65536;
-    }
-
     Worker *process = php_swoole_process_get_and_check_worker(ZEND_THIS);
 
     if (process->pipe_current == nullptr) {
@@ -792,7 +728,7 @@ static PHP_METHOD(swoole_process, read) {
 
     zend_string *buf = zend_string_alloc(buf_size, 0);
     ssize_t ret = process->pipe_current->read(buf->val, buf_size);
-    
+
     if (ret < 0) {
         efree(buf);
         if (errno != EINTR) {
@@ -926,7 +862,7 @@ static PHP_METHOD(swoole_process, pop) {
         char data[SW_MSGMAX];
     } message;
 
-    if (process->ipc_mode == 2) {
+    if (process->msgqueue_mode == SW_MSGQUEUE_BALANCE) {
         message.type = 0;
     } else {
         message.type = process->id + 1;
@@ -997,7 +933,7 @@ static PHP_METHOD(swoole_process, daemon) {
                 int new_fd = php_swoole_convert_to_fd(elem);
                 if (new_fd >= 0) {
                     if (dup2(new_fd, fd) < 0) {
-                        swSysWarn("dup2(%d, %d) failed", new_fd, fd);
+                        swoole_sys_warning("dup2(%d, %d) failed", new_fd, fd);
                     }
                 }
             }
@@ -1012,36 +948,66 @@ static PHP_METHOD(swoole_process, daemon) {
 }
 
 #ifdef HAVE_CPU_AFFINITY
-static PHP_METHOD(swoole_process, setAffinity) {
-    zval *array;
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "a", &array) == FAILURE) {
-        RETURN_FALSE;
-    }
+bool php_swoole_array_to_cpu_set(zval *array, cpu_set_t *cpu_set) {
     if (php_swoole_array_length(array) == 0) {
-        RETURN_FALSE;
+        return false;
     }
+
     if (php_swoole_array_length(array) > SW_CPU_NUM) {
         php_swoole_fatal_error(E_WARNING, "More than the number of CPU");
-        RETURN_FALSE;
+        return false;
     }
 
     zval *value = nullptr;
-    cpu_set_t cpu_set;
-    CPU_ZERO(&cpu_set);
+    CPU_ZERO(cpu_set);
 
     SW_HASHTABLE_FOREACH_START(Z_ARRVAL_P(array), value)
     if (zval_get_long(value) >= SW_CPU_NUM) {
         php_swoole_fatal_error(E_WARNING, "invalid cpu id [%d]", (int) Z_LVAL_P(value));
+        return false;
+    }
+    CPU_SET(Z_LVAL_P(value), cpu_set);
+    SW_HASHTABLE_FOREACH_END();
+
+    return true;
+}
+
+void php_swoole_cpu_set_to_array(zval *array, cpu_set_t *cpu_set) {
+    array_init(array);
+
+    int cpu_n = SW_CPU_NUM;
+    SW_LOOP_N(cpu_n) {
+        if (CPU_ISSET(i, cpu_set)) {
+            add_next_index_long(array, i);
+        }
+    }
+}
+
+static PHP_METHOD(swoole_process, setAffinity) {
+    zval *array;
+    ZEND_PARSE_PARAMETERS_START(1, 1)
+    Z_PARAM_ARRAY(array)
+    ZEND_PARSE_PARAMETERS_END();
+
+    cpu_set_t cpu_set;
+    if (!php_swoole_array_to_cpu_set(array, &cpu_set)) {
         RETURN_FALSE;
     }
-    CPU_SET(Z_LVAL_P(value), &cpu_set);
-    SW_HASHTABLE_FOREACH_END();
 
     if (swoole_set_cpu_affinity(&cpu_set) < 0) {
         php_swoole_sys_error(E_WARNING, "sched_setaffinity() failed");
         RETURN_FALSE;
     }
     RETURN_TRUE;
+}
+
+static PHP_METHOD(swoole_process, getAffinity) {
+    cpu_set_t cpu_set;
+    if (swoole_get_cpu_affinity(&cpu_set) < 0) {
+        php_swoole_sys_error(E_WARNING, "sched_getaffinity() failed");
+        RETURN_FALSE;
+    }
+    php_swoole_cpu_set_to_array(return_value, &cpu_set);
 }
 #endif
 
@@ -1062,6 +1028,10 @@ static PHP_METHOD(swoole_process, exit) {
     if (ret_code < 0 || ret_code > 255) {
         php_swoole_fatal_error(E_WARNING, "exit ret_code range is [>0 and <255] ");
         ret_code = 1;
+    }
+
+    if (swoole_event_is_available()) {
+        swoole_event_free();
     }
 
     exit(ret_code);
@@ -1155,23 +1125,55 @@ static PHP_METHOD(swoole_process, setBlocking) {
     }
 }
 
+#define SW_CHECK_PRIORITY_WHO()                                                                                        \
+    if (who_is_null) {                                                                                                 \
+        if (which == PRIO_PROCESS) {                                                                                   \
+            Worker *process = php_swoole_process_get_and_check_worker(ZEND_THIS);                                      \
+            who = process->pid;                                                                                        \
+        } else {                                                                                                       \
+            php_swoole_fatal_error(E_WARNING, "$who parameter must not be null");                                      \
+            swoole_set_last_error(SW_ERROR_INVALID_PARAMS);                                                            \
+            RETURN_FALSE;                                                                                              \
+        }                                                                                                              \
+    }
+
 static PHP_METHOD(swoole_process, setPriority) {
-    zend_long which, priority;
-    ZEND_PARSE_PARAMETERS_START(2, 2)
+    zend_long which, priority, who;
+    bool who_is_null = 1;
+
+    ZEND_PARSE_PARAMETERS_START(2, 3)
     Z_PARAM_LONG(which)
     Z_PARAM_LONG(priority)
+    Z_PARAM_OPTIONAL
+    Z_PARAM_LONG_OR_NULL(who, who_is_null)
     ZEND_PARSE_PARAMETERS_END_EX(RETURN_FALSE);
 
-    Worker *process = php_swoole_process_get_and_check_worker(ZEND_THIS);
-    RETURN_BOOL(setpriority(which, process->pid, priority) == 0);
+    SW_CHECK_PRIORITY_WHO();
+    if (setpriority(which, who, priority) < 0) {
+        swoole_set_last_error(errno);
+        RETURN_FALSE;
+    } else {
+        RETURN_TRUE;
+    }
 }
 
 static PHP_METHOD(swoole_process, getPriority) {
-    zend_long which;
-    ZEND_PARSE_PARAMETERS_START(1, 1)
+    zend_long which, who;
+    bool who_is_null = 1;
+
+    ZEND_PARSE_PARAMETERS_START(1, 2)
     Z_PARAM_LONG(which)
+    Z_PARAM_OPTIONAL
+    Z_PARAM_LONG_OR_NULL(who, who_is_null)
     ZEND_PARSE_PARAMETERS_END_EX(RETURN_FALSE);
 
-    Worker *process = php_swoole_process_get_and_check_worker(ZEND_THIS);
-    RETURN_LONG(getpriority(which, process->pid));
+    SW_CHECK_PRIORITY_WHO();
+    errno = 0;
+    int priority = getpriority(which, who);
+    if (priority == -1 && errno != 0) {
+        swoole_set_last_error(errno);
+        RETURN_FALSE;
+    } else {
+        RETURN_LONG(priority);
+    }
 }

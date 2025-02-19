@@ -13,7 +13,7 @@
   | @link     https://www.swoole.com/                                    |
   | @contact  team@swoole.com                                            |
   | @license  https://github.com/swoole/swoole-src/blob/master/LICENSE   |
-  | @author   Tianfeng Han  <mikan.tenny@gmail.com>                      |
+  | @Author   Tianfeng Han  <rango@swoole.com>                           |
   +----------------------------------------------------------------------+
 */
 
@@ -36,14 +36,14 @@ TEST(channel, push) {
         char buf[8000];
         int n = swoole_random_bytes(buf, (rand() % (sizeof(buf) / 2)) + (sizeof(buf) / 2));
         if (n <= 0) {
-            swTrace("no enough data, n=%d, errno=%d\n", n, errno);
+            swoole_trace("no enough data, n=%d, errno=%d\n", n, errno);
             continue;
         }
         m[index++] = string(buf, n);
         bytes += n;
     }
 
-    swTrace("size=%d\n", m.size());
+    swoole_trace("size=%lu", m.size());
 
     thread t1([&]() {
         auto next = m.find(0);
@@ -52,7 +52,7 @@ TEST(channel, push) {
 
         while (bytes < N) {
             if (c->push(next->second.c_str(), next->second.length()) == SW_OK) {
-                swTrace("[PUSH] index=%d, size=%d\n", index, next->second.length());
+                swoole_trace("[PUSH] index=%d, size=%lu", index, next->second.length());
                 bytes += next->second.length();
                 next = m.find(index++);
                 if (next == m.end()) {
@@ -71,7 +71,7 @@ TEST(channel, push) {
         while (bytes < N) {
             int retval = c->pop(buf, sizeof(buf));
             if (retval > 0) {
-                swTrace("[POP] index=%d, size=%ld\n", index, retval);
+                swoole_trace("[POP] index=%d, size=%d", index, retval);
                 string &_data = m[index++];
                 bytes += retval;
                 ASSERT_EQ(_data, string(buf, retval));
@@ -84,5 +84,40 @@ TEST(channel, push) {
     t1.join();
     t2.join();
 
+    c->destroy();
+}
+
+TEST(channel, peek) {
+    char buf[8000];
+    auto *c = Channel::make(128 * 1024, 8192, SW_CHAN_LOCK | SW_CHAN_NOTIFY);
+    ASSERT_EQ(c->peek(buf, sizeof(buf)), SW_ERR);
+
+    string value = "test";
+    c->push(value.c_str(), value.length());
+    ASSERT_EQ(c->peek((void *) buf, sizeof(buf)), value.length());
+    c->destroy();
+}
+
+TEST(channel, notify) {
+    auto *c = Channel::make(128 * 1024, 8192, SW_CHAN_LOCK | SW_CHAN_NOTIFY);
+    thread t1([&]() {
+        sleep(0.02);
+        string value = "test";
+        c->push(value.c_str(), value.length());
+        c->notify();
+    });
+
+    thread t2([&]() {
+        while (c->wait()) {
+            char buf[8000];
+            ASSERT_GT(c->pop((void *) buf, sizeof(buf)), 0);
+            break;
+        }
+    });
+
+    t1.join();
+    t2.join();
+
+    c->print();
     c->destroy();
 }

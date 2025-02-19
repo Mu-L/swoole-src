@@ -17,6 +17,7 @@ use Swoole\Atomic;
 use Swoole\Client;
 
 $max = file_get_contents('/proc/sys/net/core/wmem_max');
+$max = min(8 * 1024 * 1024, $max);
 
 $size = intval($max) * 2 - 32 - 4;
 
@@ -32,7 +33,7 @@ $pm->parentFunc = function ($pid) use ($port, $pm, $size) {
 };
 
 $pm->childFunc = function () use ($pm, $port, $size) {
-    $serv = new Server(TCP_SERVER_HOST, $port);
+    $serv = new Server(TCP_SERVER_HOST, $port, SWOOLE_PROCESS);
     $serv->set([
         "worker_num" => 1,
         'log_file' => '/dev/null',

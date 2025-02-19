@@ -1,5 +1,6 @@
 #include "test_core.h"
 #include "swoole_memory.h"
+#include "swoole_pipe.h"
 
 using namespace swoole;
 
@@ -74,7 +75,7 @@ static void thread_write(void) {
         } while (yield_count < 100);
 
         if (!ptr) {
-            swWarn("alloc failed. index=%d, break", i);
+            swoole_warning("alloc failed. index=%d, break", i);
         }
         ASSERT_NE(ptr, nullptr);
 

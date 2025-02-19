@@ -5,6 +5,9 @@ swoole_coroutine: check if is in the coroutine
 --FILE--
 <?php
 require __DIR__ . '/../include/bootstrap.php';
+
+define('RUN_IN_CHILD', true);
+
 $map = [
     function () {
         Co::sleep(0.001);
@@ -27,18 +30,6 @@ $map = [
         Assert::assert(0); // never here
     },
     function () {
-        Co::fread(STDIN);
-        Assert::assert(0); // never here
-    },
-    function () {
-        Co::fgets(fopen(__FILE__, 'r'));
-        Assert::assert(0); // never here
-    },
-    function () {
-        Co::fwrite(fopen(TEST_LOG_FILE, 'w+'), 'foo');
-        Assert::assert(0); // never here
-    },
-    function () {
         Co::readFile(__FILE__);
         Assert::assert(0); // never here
     },
@@ -54,9 +45,9 @@ $map = [
         Co::getaddrinfo('www.swoole.com');
         Assert::assert(0); // never here
     },
-    // function () {
-    // Co::statvfs(__DIR__); // can use outside the coroutine
-    // },
+//    function () {
+//        Co::statvfs(__DIR__);
+//    },
     function () {
         Co::exec('echo');
         Assert::assert(0); // never here
@@ -77,32 +68,8 @@ $map = [
         (new Co\Http\Client('127.0.0.1', 1234))->get('/');
         Assert::assert(0); // never here
     },
-    function () {
-        (new Co\Mysql)->connect([
-            'host' => MYSQL_SERVER_HOST,
-            'port' => MYSQL_SERVER_PORT,
-            'user' => MYSQL_SERVER_USER,
-            'password' => MYSQL_SERVER_PWD,
-            'database' => MYSQL_SERVER_DB
-        ]);
-        Assert::assert(0); // never here
-    },
-    function () {
-        (new Co\Redis)->connect('127.0.0.1', 6379);
-        Assert::assert(0); // never here
-    },
 ];
 
-function pgsql_test() {
-    (new Co\Postgresql())->connect('host=127.0.0.1 port=12345 dbname=test user=root password=root');
-    Assert::assert(0); // never here
-}
-
-if (class_exists(Co\Postgresql::class)) {
-    $map[] = function () {
-        pgsql_test();
-    };
-}
 if (class_exists(Co\Http2\Client::class)) {
     $map[] = function () {
         (new Co\Http2\Client('127.0.0.1', 1234))->connect();
@@ -112,6 +79,10 @@ if (class_exists(Co\Http2\Client::class)) {
 $info_list = [];
 foreach ($map as $i => $f) {
     $GLOBALS['f'] = $f;
+    if (RUN_IN_CHILD == false) {
+        $f();
+        continue;
+    }
     $process = new Swoole\Process(function () {
         function a()
         {
@@ -139,9 +110,16 @@ foreach ($map as $i => $f) {
     $process::wait();
     if (Assert::contains($info, 'Swoole\\Error')) {
         $_info = trim($info);
-        $_info = preg_replace('/(\#0.+?: )[^\n]+/', '$1%s', $_info, 1);
-        $_info = preg_replace('/(: )[^\n]+( in )/', '$1%s$2', $_info, 1);
-        $_info = preg_replace('/\/[^(:]+:?\(?\d+\)?/', '%s:%d', $_info);
+        if (PHP_VERSION_ID >= 80400) {
+            $_info = preg_replace('/(\#0.+?: )[^\n]+/', '$1%s', $_info, 1);
+            $_info = preg_replace('/(: )[^\n]+( in )/', '$1%s$2', $_info, 1);
+            $_info = preg_replace('/closure:[^(:]+:?\(?\d+\)?/', 'closure', $_info);
+            $_info = preg_replace('/\/[^(:]+:?\(?\d+\)?/', '%s:%d', $_info);
+        } else {
+            $_info = preg_replace('/(\#0.+?: )[^\n]+/', '$1%s', $_info, 1);
+            $_info = preg_replace('/(: )[^\n]+( in )/', '$1%s$2', $_info, 1);
+            $_info = preg_replace('/\/[^(:]+:?\(?\d+\)?/', '%s:%d', $_info);
+        }
         $info_list[] = $_info;
         if (!Assert::assert($info_list[0] === $_info)) {
             var_dump($map[$i]);

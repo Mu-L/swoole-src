@@ -10,7 +10,7 @@
   | to obtain it through the world-wide-web, please send a note to       |
   | license@swoole.com so we can mail you a copy immediately.            |
   +----------------------------------------------------------------------+
-  | Author: Tianfeng Han  <mikan.tenny@gmail.com>                        |
+  | Author: Tianfeng Han  <rango@swoole.com>                             |
   |         Twosee  <twose@qq.com>                                       |
   +----------------------------------------------------------------------+
 */
@@ -22,6 +22,7 @@
 
 #include <list>
 #include <map>
+#include <unordered_map>
 
 namespace swoole {
 
@@ -51,13 +52,18 @@ class ReactorImpl {
 
 class CallbackManager {
   public:
-    inline void append(Callback fn, void *private_data) {
+    typedef std::list<std::pair<Callback, void *>> TaskList;
+    void append(Callback fn, void *private_data) {
         list_.emplace_back(fn, private_data);
     }
-    inline void prepend(Callback fn, void *private_data) {
+    void prepend(Callback fn, void *private_data) {
         list_.emplace_front(fn, private_data);
+        auto t = list_.back();
     }
-    inline void execute() {
+    void remove(TaskList::iterator iter) {
+        list_.erase(iter);
+    }
+    void execute() {
         while (!list_.empty()) {
             std::pair<Callback, void *> task = list_.front();
             list_.pop_front();
@@ -66,7 +72,7 @@ class CallbackManager {
     }
 
   protected:
-    std::list<std::pair<Callback, void *>> list_;
+    TaskList list_;
 };
 
 class Reactor {
@@ -86,6 +92,7 @@ class Reactor {
         PRIORITY_SIGNAL_CALLBACK,
         PRIORITY_TRY_EXIT,
         PRIORITY_MALLOC_TRIM,
+        PRIORITY_WORKER_CALLBACK,
     };
 
     enum ExitCondition {
@@ -97,6 +104,8 @@ class Reactor {
         EXIT_CONDITION_AIO_TASK,
         EXIT_CONDITION_SIGNALFD,
         EXIT_CONDITION_USER_BEFORE_DEFAULT,
+        EXIT_CONDITION_FORCED_TERMINATION,
+        EXIT_CONDITION_IOURING,
         EXIT_CONDITION_DEFAULT = 999,
         EXIT_CONDITION_USER_AFTER_DEFAULT,
     };
@@ -110,7 +119,6 @@ class Reactor {
      */
     int singal_no = 0;
 
-    uint32_t event_num = 0;
     uint32_t max_event_num = 0;
 
     bool running = false;
@@ -118,10 +126,8 @@ class Reactor {
     bool once = false;
     bool wait_exit = false;
     bool destroyed = false;
-    /**
-     * callback signal
-     */
-    bool check_signalfd = false;
+    bool bailout = false;
+
     /**
      * reactor->wait timeout (millisecond) or -1
      */
@@ -166,13 +172,15 @@ class Reactor {
 
     std::function<void(Reactor *)> onBegin;
 
-    int (*write)(Reactor *reactor, network::Socket *socket, const void *buf, size_t n) = nullptr;
+    ssize_t (*write)(Reactor *reactor, network::Socket *socket, const void *buf, size_t n) = nullptr;
+    ssize_t (*writev)(Reactor *reactor, network::Socket *socket, const iovec *iov, size_t iovcnt) = nullptr;
     int (*close)(Reactor *reactor, network::Socket *socket) = nullptr;
 
   private:
     ReactorImpl *impl;
     std::map<int, std::function<void(Reactor *)>> end_callbacks;
-    std::map<int, std::function<bool(Reactor *, int &)>> exit_conditions;
+    std::map<int, std::function<bool(Reactor *, size_t &)>> exit_conditions;
+    std::unordered_map<int, network::Socket *> sockets_;
 
   public:
     Reactor(int max_event = SW_REACTOR_MAXEVENTS, Type _type = TYPE_AUTO);
@@ -180,7 +188,7 @@ class Reactor {
     bool if_exit();
     void defer(Callback cb, void *data = nullptr);
     void set_end_callback(enum EndCallback id, const std::function<void(Reactor *)> &fn);
-    void set_exit_condition(enum ExitCondition id, const std::function<bool(Reactor *, int &)> &fn);
+    void set_exit_condition(enum ExitCondition id, const std::function<bool(Reactor *, size_t &)> &fn);
     bool set_handler(int _fdtype, ReactorHandler handler);
     void add_destroy_callback(Callback cb, void *data = nullptr);
     void execute_end_callbacks(bool timedout = false);
@@ -190,33 +198,33 @@ class Reactor {
         return running;
     }
 
-    inline size_t remove_exit_condition(enum ExitCondition id) {
+    size_t remove_exit_condition(enum ExitCondition id) {
         return exit_conditions.erase(id);
     }
 
-    inline bool isset_exit_condition(enum ExitCondition id) {
+    bool isset_exit_condition(enum ExitCondition id) {
         return exit_conditions.find(id) != exit_conditions.end();
     }
 
-    inline bool isset_handler(int fdtype) {
+    bool isset_handler(int fdtype) {
         return read_handler[fdtype] != nullptr;
     }
 
-    inline int add_event(network::Socket *_socket, enum swEvent_type event_type) {
+    int add_event(network::Socket *_socket, EventType event_type) {
         if (!(_socket->events & event_type)) {
             return set(_socket, _socket->events | event_type);
         }
         return SW_OK;
     }
 
-    inline int del_event(network::Socket *_socket, enum swEvent_type event_type) {
+    int del_event(network::Socket *_socket, EventType event_type) {
         if (_socket->events & event_type) {
             return set(_socket, _socket->events & (~event_type));
         }
         return SW_OK;
     }
 
-    inline int remove_read_event(network::Socket *_socket) {
+    int remove_read_event(network::Socket *_socket) {
         if (_socket->events & SW_EVENT_WRITE) {
             _socket->events &= (~SW_EVENT_READ);
             return set(_socket, _socket->events);
@@ -225,7 +233,7 @@ class Reactor {
         }
     }
 
-    inline int remove_write_event(network::Socket *_socket) {
+    int remove_write_event(network::Socket *_socket) {
         if (_socket->events & SW_EVENT_READ) {
             _socket->events &= (~SW_EVENT_WRITE);
             return set(_socket, _socket->events);
@@ -234,7 +242,7 @@ class Reactor {
         }
     }
 
-    inline int add_read_event(network::Socket *_socket) {
+    int add_read_event(network::Socket *_socket) {
         if (_socket->events & SW_EVENT_WRITE) {
             _socket->events |= SW_EVENT_READ;
             return set(_socket, _socket->events);
@@ -243,7 +251,7 @@ class Reactor {
         }
     }
 
-    inline int add_write_event(network::Socket *_socket) {
+    int add_write_event(network::Socket *_socket) {
         if (_socket->events & SW_EVENT_READ) {
             _socket->events |= SW_EVENT_WRITE;
             return set(_socket, _socket->events);
@@ -252,15 +260,33 @@ class Reactor {
         }
     }
 
-    inline bool exists(network::Socket *_socket) {
+    bool exists(network::Socket *_socket) {
         return !_socket->removed && _socket->events;
     }
 
-    inline int get_timeout_msec() {
+    int get_timeout_msec() {
         return defer_tasks == nullptr ? timeout_msec : 0;
     }
 
-    inline ReactorHandler get_handler(enum swEvent_type event_type, enum swFd_type fd_type) {
+    size_t get_event_num() {
+        return sockets_.size();
+    }
+
+    const std::unordered_map<int, network::Socket *> &get_sockets() {
+        return sockets_;
+    }
+
+    network::Socket *get_socket(int fd) {
+        return sockets_[fd];
+    }
+
+    void foreach_socket(const std::function<void(int, network::Socket *)> &callback) {
+        for (auto &kv : sockets_) {
+            callback(kv.first, kv.second);
+        }
+    }
+
+    ReactorHandler get_handler(EventType event_type, FdType fd_type) {
         switch (event_type) {
         case SW_EVENT_READ:
             return read_handler[fd_type];
@@ -275,7 +301,7 @@ class Reactor {
         return nullptr;
     }
 
-    inline ReactorHandler get_error_handler(enum swFd_type fd_type) {
+    ReactorHandler get_error_handler(FdType fd_type) {
         ReactorHandler handler = get_handler(SW_EVENT_ERROR, fd_type);
         // error callback is not set, try to use readable or writable callback
         if (handler == nullptr) {
@@ -287,32 +313,32 @@ class Reactor {
         return handler;
     }
 
-    inline void before_wait() {
+    void before_wait() {
         start = running = true;
     }
 
-    inline int trigger_close_event(Event *event) {
+    int trigger_close_event(Event *event) {
         return default_error_handler(this, event);
     }
 
-    inline void set_wait_exit(bool enable) {
+    void set_wait_exit(bool enable) {
         wait_exit = enable;
     }
 
-    inline void _add(network::Socket *_socket, int events) {
+    void _add(network::Socket *_socket, int events) {
         _socket->events = events;
         _socket->removed = 0;
-        event_num++;
+        sockets_[_socket->fd] = _socket;
     }
 
-    inline void _set(network::Socket *_socket, int events) {
+    void _set(network::Socket *_socket, int events) {
         _socket->events = events;
     }
 
-    inline void _del(network::Socket *_socket) {
+    void _del(network::Socket *_socket) {
         _socket->events = 0;
         _socket->removed = 1;
-        event_num--;
+        sockets_.erase(_socket->fd);
     }
 
     bool catch_error() {
@@ -323,14 +349,15 @@ class Reactor {
         return false;
     }
 
-    static int _write(Reactor *reactor, network::Socket *socket, const void *buf, size_t n);
+    static ssize_t _write(Reactor *reactor, network::Socket *socket, const void *buf, size_t n);
+    static ssize_t _writev(Reactor *reactor, network::Socket *socket, const iovec *iov, size_t iovcnt);
     static int _close(Reactor *reactor, network::Socket *socket);
     static int _writable_callback(Reactor *reactor, Event *ev);
 
     void activate_future_task();
 
-    static enum swFd_type get_fd_type(int flags) {
-        return (enum swFd_type)(flags & (~SW_EVENT_READ) & (~SW_EVENT_WRITE) & (~SW_EVENT_ERROR) & (~SW_EVENT_ONCE));
+    static FdType get_fd_type(int flags) {
+        return (FdType)(flags & (~SW_EVENT_READ) & (~SW_EVENT_WRITE) & (~SW_EVENT_ERROR) & (~SW_EVENT_ONCE));
     }
 
     static bool isset_read_event(int events) {

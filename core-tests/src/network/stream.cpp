@@ -13,24 +13,27 @@
   | @link     https://www.swoole.com/                                    |
   | @contact  team@swoole.com                                            |
   | @license  https://github.com/swoole/swoole-src/blob/master/LICENSE   |
-  | @author   Tianfeng Han  <mikan.tenny@gmail.com>                      |
+  | @Author   Tianfeng Han  <rango@swoole.com>                           |
   +----------------------------------------------------------------------+
 */
 
 #include "test_core.h"
+#include "swoole_server.h"
 
 using namespace std;
+using namespace swoole;
 using namespace swoole::network;
 
 TEST(stream, send) {
-    swServer serv(swoole::Server::MODE_BASE);
+    Server serv(Server::MODE_BASE);
     serv.worker_num = 1;
+    int svr_port = swoole::test::get_random_port();
     int ori_log_level = sw_logger()->get_level();
     sw_logger()->set_level(SW_LOG_ERROR);
 
-    swListenPort *port = serv.add_port(SW_SOCK_TCP, TEST_HOST, TEST_PORT);
+    ListenPort *port = serv.add_port(SW_SOCK_TCP, TEST_HOST, svr_port);
     if (!port) {
-        swWarn("listen failed, [error=%d]", swoole_get_last_error());
+        swoole_warning("listen failed, [error=%d]", swoole_get_last_error());
         exit(2);
     }
 
@@ -46,7 +49,7 @@ TEST(stream, send) {
     ASSERT_EQ(serv.create(), SW_OK);
 
     std::thread t1([&]() {
-        swSignal_none();
+        swoole_signal_block_all();
 
         lock.lock();
 
@@ -66,7 +69,7 @@ TEST(stream, send) {
         ASSERT_EQ(stream1->send(buf, sizeof(buf)), SW_OK);
 
         // success requset
-        auto stream2 = Stream::create(TEST_HOST, TEST_PORT, SW_SOCK_TCP);
+        auto stream2 = Stream::create(TEST_HOST, svr_port, SW_SOCK_TCP);
         ASSERT_TRUE(stream2);
         stream2->private_data = new string(buf, sizeof(buf));
         stream2->response = [](Stream *stream, const char *data, uint32_t length) {
@@ -82,9 +85,9 @@ TEST(stream, send) {
         kill(getpid(), SIGTERM);
     });
 
-    serv.onWorkerStart = [&lock](swServer *serv, int worker_id) { lock.unlock(); };
+    serv.onWorkerStart = [&lock](Server *serv, Worker *worker) { lock.unlock(); };
 
-    serv.onReceive = [&buf](swServer *serv, swRecvData *req) -> int {
+    serv.onReceive = [&buf](Server *serv, RecvData *req) -> int {
         string req_body(req->data + 4, req->info.len - 4);
 
         EXPECT_EQ(string(buf, sizeof(buf)), req_body);

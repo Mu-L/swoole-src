@@ -13,7 +13,7 @@
  | to obtain it through the world-wide-web, please send a note to       |
  | license@swoole.com so we can mail you a copy immediately.            |
  +----------------------------------------------------------------------+
- | Author: Tianfeng Han  <mikan.tenny@gmail.com>                        |
+ | Author: Tianfeng Han  <rango@swoole.com>                             |
  +----------------------------------------------------------------------+
  */
 
@@ -31,6 +31,8 @@ class ProcessManager
      */
     protected $atomic;
     protected $alone = false;
+    protected $onlyChild = false;
+    protected $onlyParent = false;
     protected $freePorts = [];
     protected $randomFunc = 'get_safe_random';
     protected $randomData = [[]];
@@ -47,9 +49,10 @@ class ProcessManager
     public $useConstantPorts = false;
 
     protected $childPid;
-    protected $childStatus = 255;
+    protected $childExitStatus = 255;
     protected $expectExitSignal = [0, SIGTERM];
     protected $parentFirst = false;
+    protected $killed = false;
     /**
      * @var Process
      */
@@ -238,7 +241,8 @@ class ProcessManager
         if (!defined('PCNTL_ESRCH')) {
             define('PCNTL_ESRCH', 3);
         }
-        if (!$this->alone && $this->childPid) {
+        if (!$this->alone and !$this->killed and $this->childPid) {
+            $this->killed = true;
             if ($force || (!@Process::kill($this->childPid) && swoole_errno() !== PCNTL_ESRCH)) {
                 if (!@Process::kill($this->childPid, SIGKILL) && swoole_errno() !== PCNTL_ESRCH) {
                     exit('KILL CHILD PROCESS ERROR');
@@ -247,14 +251,19 @@ class ProcessManager
         }
     }
 
-    public function initFreePorts(int $num = 1)
+    /**
+     * @param int $num
+     * @param int $increment Only used for constant port number, must be a constant
+     * @return void
+     */
+    public function initFreePorts(int $num = 1, int $increment = 0): void
     {
         for ($i = $num; $i--;) {
-            $this->freePorts[] = $this->useConstantPorts ? (9500 + $num - $i + count($this->freePorts)) : get_one_free_port();
+            $this->freePorts[] = $this->useConstantPorts ? (9500 + $num - $i + count($this->freePorts) + $increment) : get_one_free_port();
         }
     }
 
-    public function initFreeIPv6Ports(int $num = 1)
+    public function initFreeIPv6Ports(int $num = 1): void
     {
         for ($i = $num; $i--;) {
             $this->freePorts[] = $this->useConstantPorts ? (9500 + $num - $i + count($this->freePorts)) : get_one_free_port_ipv6();
@@ -269,14 +278,23 @@ class ProcessManager
             $this->alone = true;
             $this->initFreePorts();
             if ($argv[1] == 'child') {
-                return $this->runChildFunc();
+                $this->onlyChild = true;
             } elseif ($argv[1] == 'parent') {
-                return $this->runParentFunc();
+                $this->onlyParent = true;
             } else {
                 throw new RuntimeException("bad parameter \$1\n");
             }
         }
         $this->initFreePorts();
+        if ($this->alone) {
+            if ($this->onlyChild) {
+                return $this->runChildFunc();
+            } elseif ($this->onlyParent) {
+                return $this->runParentFunc();
+            }
+            $this->alone = false;
+        }
+
         $this->childProcess = new Process(function () {
             if ($this->parentFirst) {
                 $this->wait();
@@ -296,7 +314,7 @@ class ProcessManager
         $this->runParentFunc($this->childPid = $this->childProcess->pid);
         Event::wait();
         $waitInfo = Process::wait(true);
-        $this->childStatus = $waitInfo['code'];
+        $this->childExitStatus = $waitInfo['code'];
         if (!in_array($waitInfo['signal'], $this->expectExitSignal)) {
             throw new RuntimeException("Unexpected exit code {$waitInfo['signal']}");
         }
@@ -324,9 +342,13 @@ class ProcessManager
         if (!is_array($code)) {
             $code = [$code];
         }
-        if (!in_array($this->childStatus, $code)) {
-            throw new RuntimeException("Unexpected exit code {$this->childStatus}");
+        if (!in_array($this->childExitStatus, $code)) {
+            throw new RuntimeException("Unexpected exit code {$this->childExitStatus}");
         }
+    }
+
+    function getChildExitStatus() {
+        return $this->childExitStatus;
     }
 
     public function setExpectExitSignal($signal = 0)
@@ -335,5 +357,20 @@ class ProcessManager
             $signal = [$signal];
         }
         $this->expectExitSignal = $signal;
+    }
+
+    static function exec(callable $fn)
+    {
+        $pm = new static();
+        $pm->setWaitTimeout(0);
+        $pm->parentFunc = function () {
+        };
+        $pm->childFunc = function () use ($pm, $fn) {
+            $fn($pm);
+        };
+        $pm->childFirst();
+        $pm->run(true);
+
+        return $pm;
     }
 }

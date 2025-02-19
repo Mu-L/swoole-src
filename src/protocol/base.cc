@@ -12,7 +12,7 @@
  | to obtain it through the world-wide-web, please send a note to       |
  | license@swoole.com so we can mail you a copy immediately.            |
  +----------------------------------------------------------------------+
- | Author: Tianfeng Han  <mikan.tenny@gmail.com>                        |
+ | Author: Tianfeng Han  <rango@swoole.com>                             |
  +----------------------------------------------------------------------+
  */
 
@@ -20,11 +20,12 @@
 #include "swoole_string.h"
 #include "swoole_socket.h"
 #include "swoole_protocol.h"
+
 namespace swoole {
 /**
  * return the package total length
  */
-ssize_t Protocol::default_length_func(Protocol *protocol, network::Socket *socket, const char *data, uint32_t size) {
+ssize_t Protocol::default_length_func(const Protocol *protocol, network::Socket *socket, PacketLength *pl) {
     uint16_t length_offset = protocol->package_length_offset;
     uint8_t package_length_size =
         protocol->get_package_length_size ? protocol->get_package_length_size(socket) : protocol->package_length_size;
@@ -37,37 +38,39 @@ ssize_t Protocol::default_length_func(Protocol *protocol, network::Socket *socke
     /**
      * no have length field, wait more data
      */
-    if (size < length_offset + package_length_size) {
-        protocol->real_header_length = length_offset + package_length_size;
+    if (pl->buf_size < length_offset + package_length_size) {
+        pl->header_len = length_offset + package_length_size;
         return 0;
     }
-    body_length = swoole_unpack(protocol->package_length_type, data + length_offset);
+    body_length = swoole_unpack(protocol->package_length_type, pl->buf + length_offset);
     // Length error
     // Protocol length is not legitimate, out of bounds or exceed the allocated length
     if (body_length < 0) {
-        swWarn("invalid package (size=%d) from socket#%u<%s:%d>",
-               size,
-               socket->fd,
-               socket->info.get_ip(),
-               socket->info.get_port());
+        swoole_warning("invalid package (size=%d) from socket#%u<%s:%d>",
+                       pl->buf_size,
+                       socket->fd,
+                       socket->info.get_ip(),
+                       socket->info.get_port());
         return SW_ERR;
     }
-    swDebug("length=%d", protocol->package_body_offset + body_length);
+    swoole_debug("length=%d", protocol->package_body_offset + body_length);
+    pl->header_len = protocol->package_length_size;
 
     // total package length
     return protocol->package_body_offset + body_length;
 }
 
 int Protocol::recv_split_by_eof(network::Socket *socket, String *buffer) {
+    RecvData rdata{};
+
     if (buffer->length < package_eof_len) {
         return SW_CONTINUE;
     }
 
-    int retval;
-
     ssize_t n = buffer->split(package_eof, package_eof_len, [&](const char *data, size_t length) -> int {
-        if (onPackage(this, socket, data, length) < 0) {
-            retval = SW_CLOSE;
+        rdata.info.len = length;
+        rdata.data = data;
+        if (onPackage(this, socket, &rdata) < 0) {
             return false;
         }
         if (socket->removed) {
@@ -76,12 +79,8 @@ int Protocol::recv_split_by_eof(network::Socket *socket, String *buffer) {
         return true;
     });
 
-    if (socket->removed) {
+    if (socket->removed || n < 0) {
         return SW_CLOSE;
-    }
-
-    if (n < 0) {
-        return retval;
     } else if (n == 0) {
         return SW_CONTINUE;
     } else if (n < (ssize_t) buffer->length) {
@@ -107,9 +106,11 @@ int Protocol::recv_split_by_eof(network::Socket *socket, String *buffer) {
  * @return SW_OK: continue
  */
 int Protocol::recv_with_length_protocol(network::Socket *socket, String *buffer) {
+    RecvData rdata{};
+    PacketLength pl{};
     ssize_t package_length;
     uint8_t _package_length_size = get_package_length_size ? get_package_length_size(socket) : package_length_size;
-    uint32_t recv_size;
+    uint32_t recv_size = 0;
     ssize_t recv_n = 0;
 
     // protocol error
@@ -134,9 +135,9 @@ _do_recv:
 
     recv_n = socket->recv(buffer->str + buffer->length, recv_size, 0);
     if (recv_n < 0) {
-        switch (socket->catch_error(errno)) {
+        switch (socket->catch_read_error(errno)) {
         case SW_ERROR:
-            swSysWarn("recv(%d, %d) failed", socket->fd, recv_size);
+            swoole_sys_warning("recv(%d, %d) failed", socket->fd, recv_size);
             return SW_OK;
         case SW_CLOSE:
             return SW_ERR;
@@ -151,7 +152,9 @@ _do_recv:
         if (socket->recv_wait) {
             if (buffer->length >= (size_t) buffer->offset) {
             _do_dispatch:
-                if (onPackage(this, socket, buffer->str, buffer->offset) < 0) {
+                rdata.info.len = buffer->offset;
+                rdata.data = buffer->str;
+                if (onPackage(this, socket, &rdata) < 0) {
                     return SW_ERR;
                 }
                 if (socket->removed) {
@@ -174,17 +177,27 @@ _do_recv:
             return SW_OK;
         } else {
         _do_get_length:
-            package_length = get_package_length(this, socket, buffer->str, buffer->length);
+            pl.buf = buffer->str;
+            pl.buf_size = buffer->length;
+            // TODO: support dynamic calculation of header buffer length (recv_size)
+            pl.header_len = 0;
+            package_length = get_package_length(this, socket, &pl);
             // invalid package, close connection.
             if (package_length < 0) {
+                swoole_error_log(SW_LOG_WARNING,
+                                 SW_ERROR_PACKAGE_MALFORMED_DATA,
+                                 "received %zu bytes of malformed data from the client[%s:%d]",
+                                 buffer->length,
+                                 socket->info.get_ip(),
+                                 socket->info.get_port());
                 return SW_ERR;
             }
             // no length
             else if (package_length == 0) {
-                if (buffer->length == package_length_offset + package_length_size) {
+                if (buffer->length == recv_size) {
                     swoole_error_log(SW_LOG_WARNING,
                                      SW_ERROR_PACKAGE_LENGTH_NOT_FOUND,
-                                     "bad request, no length found in %ld bytes",
+                                     "bad request, no length found in %zu bytes",
                                      buffer->length);
                     return SW_ERR;
                 } else {
@@ -226,7 +239,8 @@ _do_recv:
  */
 int Protocol::recv_with_eof_protocol(network::Socket *socket, String *buffer) {
     bool recv_again = false;
-    int buf_size;
+    size_t buf_size;
+    RecvData rdata{};
 
 _recv_data:
     buf_size = buffer->size - buffer->length;
@@ -236,11 +250,11 @@ _recv_data:
         buf_size = SW_BUFFER_SIZE_STD;
     }
 
-    int n = socket->recv(buf_ptr, buf_size, 0);
+    ssize_t n = socket->recv(buf_ptr, buf_size, 0);
     if (n < 0) {
-        switch (socket->catch_error(errno)) {
+        switch (socket->catch_read_error(errno)) {
         case SW_ERROR:
-            swSysWarn("recv from socket#%d failed", socket->fd);
+            swoole_sys_warning("recv from socket#%d failed", socket->fd);
             return SW_OK;
         case SW_CLOSE:
             return SW_ERR;
@@ -267,7 +281,9 @@ _recv_data:
             }
         } else if (memcmp(buffer->str + buffer->length - package_eof_len, package_eof, package_eof_len) == 0) {
             buffer->offset = buffer->length;
-            if (onPackage(this, socket, buffer->str, buffer->length) < 0) {
+            rdata.info.len = buffer->length;
+            rdata.data = buffer->str;
+            if (onPackage(this, socket, &rdata) < 0) {
                 return SW_ERR;
             }
             if (socket->removed) {
@@ -284,7 +300,7 @@ _recv_data:
 
         // over max length, will discard
         if (buffer->length == package_max_length) {
-            swWarn("Package is too big. package_length=%d", (int) buffer->length);
+            swoole_warning("Package is too big. package_length=%d", (int) buffer->length);
             return SW_ERR;
         }
 
@@ -292,7 +308,7 @@ _recv_data:
         if (buffer->length == buffer->size) {
             recv_again = true;
             if (buffer->size < package_max_length) {
-                uint32_t extend_size = swoole_size_align(buffer->size * 2, SwooleG.pagesize);
+                uint32_t extend_size = swoole_size_align(buffer->size * 2, swoole_pagesize());
                 if (extend_size > package_max_length) {
                     extend_size = package_max_length;
                 }

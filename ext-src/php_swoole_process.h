@@ -11,7 +11,7 @@
   | license@php.net so we can mail you a copy immediately.               |
   +----------------------------------------------------------------------+
   | Author: Twosee  <twose@qq.com>                                       |
-  | Author: Tianfeng Han  <mikan.tenny@gmail.com>                        |
+  | Author: Tianfeng Han  <rango@swoole.com>                             |
   +----------------------------------------------------------------------+
 */
 
@@ -22,3 +22,7 @@
 
 void php_swoole_process_clean();
 int php_swoole_process_start(swoole::Worker *process, zval *zobject);
+swoole::Worker *php_swoole_process_get_worker(zval *zobject);
+void php_swoole_process_set_worker(zval *zobject, swoole::Worker *worker);
+
+swoole::ProcessPool *sw_process_pool();

@@ -26,12 +26,12 @@ class TestServer_5 extends LengthServer
 }
 
 TestServer_5::$random_bytes = true;
-TestServer_5::$pkg_num = IS_IN_TRAVIS ? 1000 : 10000;
+TestServer_5::$pkg_num = IS_IN_CI ? 1000 : 10000;
 
 $pm = new ProcessManager;
 $pm->parentFunc = function ($pid) use ($pm)
 {
-    $client = new swoole_client(SWOOLE_SOCK_TCP);
+    $client = new Swoole\Client(SWOOLE_SOCK_TCP);
     if (!$client->connect('127.0.0.1', $pm->getFreePort()))
     {
         exit("connect failed\n");
@@ -65,7 +65,7 @@ $pm->childFunc = function () use ($pm) {
         $serv = new TestServer_5($pm->getFreePort(), false);
         $serv->start();
     });
-    swoole_event::wait();
+    Swoole\Event::wait();
 };
 
 $pm->childFirst();

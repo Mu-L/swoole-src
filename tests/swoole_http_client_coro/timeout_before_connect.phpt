@@ -3,7 +3,7 @@ swoole_http_client_coro: use timeout and timeout before connect
 --SKIPIF--
 <?php
 require __DIR__ . '/../include/skipif.inc';
-skip_if_in_travis('foreign network dns error');
+skip_if_in_ci('foreign network dns error');
 skip_if_offline();
 ?>
 --FILE--
@@ -40,6 +40,6 @@ go(function () {
     Assert::same($cli2->errCode, 0);
     Assert::assert($cli2->statusCode === 200 && strpos($cli2->body, 'tencent') !== false);
 });
-swoole_event::wait();
+Swoole\Event::wait();
 ?>
 --EXPECT--

@@ -33,10 +33,10 @@ $pm->parentFunc = function ($pid) use ($pm) {
         }
         $pm->kill();
     });
-    swoole_event::wait();
+    Swoole\Event::wait();
 };
 $pm->childFunc = function () use ($pm) {
-    $http = new swoole_http_server('127.0.0.1', $pm->getFreePort(), SWOOLE_BASE, SWOOLE_SOCK_TCP | SWOOLE_SSL);
+    $http = new Swoole\Http\Server('127.0.0.1', $pm->getFreePort(), SWOOLE_BASE, SWOOLE_SOCK_TCP | SWOOLE_SSL);
     $http->set([
             'log_file' => '/dev/null',
             'open_http2_protocol' => true,
@@ -44,7 +44,7 @@ $pm->childFunc = function () use ($pm) {
             'http_compression' => true,
             'ssl_cert_file' => SSL_FILE_DIR . '/server.crt',
             'ssl_key_file' => SSL_FILE_DIR . '/server.key'
-        ] + (IS_IN_TRAVIS ? [] : [
+        ] + (IS_IN_CI ? [] : [
             'ssl_verify_peer' => true,
             'ssl_allow_self_signed' => true,
             'ssl_client_cert_file' => SSL_FILE_DIR2 . '/ca-cert.pem'
@@ -54,7 +54,7 @@ $pm->childFunc = function () use ($pm) {
         global $pm;
         $pm->wakeup();
     });
-    $http->on("request", function ($request, swoole_http_response $response) {
+    $http->on("request", function ($request, Swoole\Http\Response $response) {
         $response->end(co::readFile(__DIR__ . '/../../README.md'));
     });
     $http->start();

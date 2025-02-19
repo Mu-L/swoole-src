@@ -1,24 +1,142 @@
-English | [中文](./README-CN.md)
+<h2 align=center>
+<img width="200" height="120" alt="Swoole Logo" src="docs/swoole-logo.svg" /> <br />
+    Swoole is an event-driven, asynchronous, coroutine-based concurrency library with high performance for PHP.
+</h2>
 
-# Swoole
-
-[![Latest Version](https://img.shields.io/github/release/swoole/swoole-src.svg)](https://github.com/swoole/swoole-src/releases)
-[![Build Status](https://api.travis-ci.org/swoole/swoole-src.svg)](https://travis-ci.org/swoole/swoole-src)
-[![License](https://img.shields.io/badge/license-apache2-blue.svg)](LICENSE)
-[![Coverity Scan Build Status](https://scan.coverity.com/projects/11654/badge.svg)](https://scan.coverity.com/projects/swoole-swoole-src)
+[![lib-swoole](https://github.com/swoole/swoole-src/workflows/lib-swoole/badge.svg)](https://github.com/swoole/swoole-src/actions?query=workflow%3Alib-swoole)
+[![ext-swoole](https://github.com/swoole/swoole-src/workflows/ext-swoole/badge.svg)](https://github.com/swoole/swoole-src/actions?query=workflow%3Aext-swoole)
+[![test-linux](https://github.com/swoole/swoole-src/workflows/test-linux/badge.svg)](https://github.com/swoole/swoole-src/actions?query=workflow%3Atest-linux)
+[![Frameworks Tests](https://github.com/swoole/swoole-src/actions/workflows/framework.yml/badge.svg)](https://github.com/swoole/swoole-src/actions/workflows/framework.yml)
 [![codecov](https://codecov.io/gh/swoole/swoole-src/branch/master/graph/badge.svg)](https://codecov.io/gh/swoole/swoole-src)
 
-![](./mascot.png)
+[![Twitter](https://badgen.net/badge/icon/twitter?icon=twitter&label)](https://twitter.com/phpswoole)
+[![Discord](https://badgen.net/badge/icon/discord?icon=discord&label)](https://discord.swoole.dev)
+[![Latest Release](https://img.shields.io/github/release/swoole/swoole-src.svg)](https://github.com/swoole/swoole-src/releases/)
+[![License](https://badgen.net/github/license/swoole/swoole-src)](https://github.com/swoole/swoole-src/blob/master/LICENSE)
+[![Coverity Scan Build Status](https://scan.coverity.com/projects/11654/badge.svg)](https://scan.coverity.com/projects/swoole-swoole-src)
 
-**Swoole is an event-driven asynchronous & coroutine-based concurrency networking communication engine with high performance written in C++ for PHP.**
+## ⚙️ Quick Start
 
-## ✨Event-based
+Run Swoole program by [Docker](https://github.com/swoole/docker-swoole)
+
+```bash
+docker run --rm phpswoole/swoole "php --ri swoole"
+```
+
+> For details on how to use it, see: [How to Use This Image](https://github.com/swoole/docker-swoole#how-to-use-this-image).
+
+## Documentation
+<https://wiki.swoole.com/>
+
+### HTTP Service
+```php
+$http = new Swoole\Http\Server('127.0.0.1', 9501);
+$http->set(['hook_flags' => SWOOLE_HOOK_ALL]);
+
+$http->on('request', function ($request, $response) {
+    $result = [];
+    Co::join([
+        go(function () use (&$result) {
+            $result['google'] = file_get_contents("https://www.google.com/");
+        }),
+        go(function () use (&$result) {
+            $result['taobao'] = file_get_contents("https://www.taobao.com/");
+        })
+    ]);
+    $response->end(json_encode($result));
+});
+
+$http->start();
+```
+
+### Concurrency
+```php
+Co\run(function() {
+    Co\go(function() {
+        while(1) {
+            sleep(1);
+            $fp = stream_socket_client("tcp://127.0.0.1:8000", $errno, $errstr, 30);
+            echo fread($fp, 8192), PHP_EOL;
+        }
+    });
+
+    Co\go(function() {
+        $fp = stream_socket_server("tcp://0.0.0.0:8000", $errno, $errstr, STREAM_SERVER_BIND | STREAM_SERVER_LISTEN);
+        while(1) {
+            $conn = stream_socket_accept($fp);
+            fwrite($conn, 'The local time is ' . date('n/j/Y g:i a'));
+        }
+    });
+
+    Co\go(function() {
+        $redis = new Redis();
+        $redis->connect('127.0.0.1', 6379);
+        while(true) {
+            $redis->subscribe(['test'], function ($instance, $channelName, $message) {
+                echo 'New redis message: '.$channelName, "==>", $message, PHP_EOL;
+            });
+        }
+    });
+
+    Co\go(function() {
+        $redis = new Redis();
+        $redis->connect('127.0.0.1', 6379);
+        $count = 0;
+        while(true) {
+            sleep(2);
+            $redis->publish('test','hello, world, count='.$count++);
+        }
+    });
+});
+```
+
+## Runtime Hook
+
+**Swoole hooks the blocking io function of PHP at the `bottom layer` and `automatically` converts it to a non-blocking function, so that these functions can be called concurrently in coroutines.**
+
+### Supported extension/functions
+
+* `ext-curl` (Support `symfony` and `guzzle`)
+* `ext-redis`
+* `ext-mysqli`
+* `ext-pdo_mysql`
+* `ext-pdo_pgsql`
+* `ext-pdo_sqlite`
+* `ext-pdo_oracle`
+* `ext-pdo_odbc`
+* `stream functions` (e.g. `stream_socket_client`/`stream_socket_server`), Supports `TCP`/`UDP`/`UDG`/`Unix`/`SSL/TLS`/`FileSystem API`/`Pipe`
+* `ext-sockets`
+* `ext-soap`
+* `sleep`/`usleep`/`time_sleep_until`
+* `proc_open`
+* `gethostbyname`/`shell_exec`/`exec`
+* `fread`/`fopen`/`fsockopen`/`fwrite`/`flock`
+
+
+## 🛠 Develop & Discussion
+
++ __IDE Helper & API__: <https://github.com/swoole/ide-helper>
++ __Twitter__: <https://twitter.com/phpswoole>
++ __Discord__: <https://discord.swoole.dev>
++ __中文社区__: <https://wiki.swoole.com/#/other/discussion>
+
+## 💎 Awesome Swoole
+Project [Awesome Swoole](https://github.com/swoole/awesome-swoole) maintains a curated list of awesome things related to Swoole, including
+
+* Swoole-based frameworks and libraries.
+* Packages to integrate Swoole with popular PHP frameworks, including Laravel, Symfony, Slim, and Yii.
+* Books, videos, and other learning materials about Swoole.
+* Debugging, profiling, and testing tools for developing Swoole-based applications.
+* Coroutine-friendly packages and libraries.
+* Other Swoole related projects and resources.
+
+## ✨ Event-based
 
 The network layer in Swoole is event-based and takes full advantage of the underlying epoll/kqueue implementation, making it really easy to serve millions of requests.
 
 Swoole 4.x uses a brand new engine kernel and now it has a full-time developer team, so we are entering an unprecedented period in PHP history which offers a unique possibility for rapid evolution in performance.
 
-## ⚡️Coroutine
+## ⚡ Coroutine
 
 Swoole 4.x or later supports the built-in coroutine with high availability, and you can use fully synchronized code to implement asynchronous performance. PHP code without any additional keywords, the underlying automatic coroutine-scheduling.
 
@@ -437,7 +555,7 @@ echo 'use ' . (microtime(true) - $s) . ' s';
 ### Compiling requirements
 
 + Linux, OS X or Cygwin, WSL
-+ PHP 7.0.0 or later (The higher the version, the better the performance.)
++ PHP 8.1.0 or later (The higher the version, the better the performance.)
 + GCC 4.8 or later
 
 ### 1. Install via PECL (beginners)
@@ -448,12 +566,12 @@ pecl install swoole
 
 ### 2. Install from source (recommended)
 
-Please download the source packages from [Releases](https://github.com/swoole/swoole-src/releases) or:
+Please download the source packages from [Releases](https://github.com/swoole/swoole-src/releases) or clone a specific version. Don't use `master` branch as it may be in development.
 
+To clone the source code from git specify a tag:
 ```shell
-git clone https://github.com/swoole/swoole-src.git && \
-cd swoole-src && \
-git checkout v4.x.x
+git clone --branch v6.0.0 --single-branch https://github.com/swoole/swoole-src.git && \
+cd swoole-src
 ```
 
 Compile and install at the source folder:
@@ -474,15 +592,15 @@ After compiling and installing to the system successfully, you have to add a new
 
 + `--enable-openssl` or `--with-openssl-dir=DIR`
 + `--enable-sockets`
-+ `--enable-http2`
 + `--enable-mysqlnd` (need mysqlnd, it just for supporting `$mysql->escape` method)
++ `--enable-swoole-curl`
 
 ### Upgrade
 
 >  ⚠️ If you upgrade from source, don't forget to `make clean` before you upgrade your swoole
 
 1. `pecl upgrade swoole`
-2. `git pull && cd swoole-src && make clean && make && sudo make install`
+2. `cd swoole-src && git pull && make clean && make && sudo make install`
 3. if you change your PHP version, please re-run `phpize clean && phpize` then try to compile
 
 ### Major change since version 4.3.0
@@ -490,8 +608,8 @@ After compiling and installing to the system successfully, you have to add a new
 Async clients and API are moved to a separate PHP extension `swoole_async` since version 4.3.0, install `swoole_async`:
 
 ```shell
-git clone https://github.com/swoole/async-ext.git
-cd async-src
+git clone https://github.com/swoole/ext-async.git
+cd ext-async
 phpize
 ./configure
 make -j 4
@@ -499,24 +617,6 @@ sudo make install
 ```
 
 Enable it by adding a new line `extension=swoole_async.so` to `php.ini`.
-
-## 💎 Frameworks & Components
-+ [**Hyperf**](https://github.com/hyperf/hyperf) is a coroutine framework that focuses on hyperspeed and flexibility, specifically used for build microservices or middlewares.
-+ [**Swoft**](https://github.com/swoft-cloud/swoft) is a modern, high-performance AOP and coroutine PHP framework.
-+ [**Easyswoole**](https://www.easyswoole.com) is a simple, high-performance PHP framework, based on Swoole, which makes using Swoole as easy as `echo "hello world"`.
-+ [**MixPHP**](https://github.com/mix-php/mix) is a powerful single-threaded coroutine framework with a very small footprint, simple and elegant.
-+ [**imi**](https://github.com/Yurunsoft/imi) is a high-performance coroutine application development framework based on PHP Swoole, which supports the development of HttpApi, WebSocket, TCP, UDP services.
-+ [**Saber**](https://github.com/swlib/saber) is a human-friendly, high-performance HTTP client component that has almost everything you can imagine.
-+ [**One**](https://github.com/lizhichao/one) is a minimalist, high-performance PHP framework that supports the [swoole | php-fpm] environment
-
-## 🛠 Develop & Discussion
-
-+ __中文文档__: <https://wiki.swoole.com>
-+ __Documentation__: <https://www.swoole.co.uk/docs>
-+ __IDE Helper & API__: <https://github.com/swoole/ide-helper>
-+ __中文社区__: <https://wiki.swoole.com/#/other/discussion>
-+ __Twitter__: <https://twitter.com/php_swoole>
-+ __Slack Group__: <https://swoole.slack.com>
 
 ## 🍭 Benchmark
 

@@ -15,7 +15,7 @@ $port1 = get_one_free_port();
 $port2 = get_one_free_port();
 $port3 = get_one_free_port();
 
-function makeTcpClient_without_protocol($host, $port, callable $onConnect = null, callable $onReceive = null)
+function makeTcpClient_without_protocol($host, $port, ?callable $onConnect = null, ?callable $onReceive = null)
 {
     go(function () use ($host, $port, $onConnect, $onReceive) {
         $cli = new Client(SWOOLE_SOCK_TCP);
@@ -58,13 +58,13 @@ $pm->parentFunc = function ($pid) use ($pm, $port1, $port2, $port3)
         Assert::same((int)$data, $port1);
         $cli->close();
     });
-    swoole_event_wait();
+    Swoole\Event::wait();
     $pm->kill();
 };
 
 $pm->childFunc = function () use ($pm,  $port1, $port2, $port3)
 {
-    $server = new Server('127.0.0.1', $port1);
+    $server = new Server('127.0.0.1', $port1, SWOOLE_PROCESS);
     $server->set(array(
         'log_file' => '/dev/null',
         'worker_num' => 1,

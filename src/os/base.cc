@@ -12,39 +12,35 @@
  | to obtain it through the world-wide-web, please send a note to       |
  | license@swoole.com so we can mail you a copy immediately.            |
  +----------------------------------------------------------------------+
- | Author: Tianfeng Han  <mikan.tenny@gmail.com>                        |
+ | Author: Tianfeng Han  <rango@swoole.com>                             |
  +----------------------------------------------------------------------+
  */
 
 #include "swoole.h"
-#include "swoole_string.h"
 #include "swoole_socket.h"
 #include "swoole_async.h"
 
-#include <sys/file.h>
-#include <sys/stat.h>
 #include <arpa/inet.h>
-#include <mutex>
 
 #if __APPLE__
 int swoole_daemon(int nochdir, int noclose) {
     pid_t pid;
 
     if (!nochdir && chdir("/") != 0) {
-        swSysWarn("chdir() failed");
+        swoole_sys_warning("chdir() failed");
         return -1;
     }
 
     if (!noclose) {
         int fd = open("/dev/null", O_RDWR);
         if (fd < 0) {
-            swSysWarn("open() failed");
+            swoole_sys_warning("open() failed");
             return -1;
         }
 
         if (dup2(fd, 0) < 0 || dup2(fd, 1) < 0 || dup2(fd, 2) < 0) {
             close(fd);
-            swSysWarn("dup2() failed");
+            swoole_sys_warning("dup2() failed");
             return -1;
         }
 
@@ -53,14 +49,14 @@ int swoole_daemon(int nochdir, int noclose) {
 
     pid = swoole_fork(SW_FORK_DAEMON);
     if (pid < 0) {
-        swSysWarn("fork() failed");
+        swoole_sys_warning("fork() failed");
         return -1;
     }
     if (pid > 0) {
         _exit(0);
     }
     if (setsid() < 0) {
-        swSysWarn("setsid() failed");
+        swoole_sys_warning("setsid() failed");
         return -1;
     }
     return 0;
@@ -82,20 +78,29 @@ int swoole_set_cpu_affinity(cpu_set_t *set) {
     return sched_setaffinity(getpid(), sizeof(*set), set);
 #endif
 }
+
+int swoole_get_cpu_affinity(cpu_set_t *set) {
+#ifdef __FreeBSD__
+    return cpuset_getaffinity(CPU_LEVEL_WHICH, CPU_WHICH_PID, -1, sizeof(*set), set);
+#else
+    return sched_getaffinity(getpid(), sizeof(*set), set);
+#endif
+}
 #endif
 
 namespace swoole {
 namespace async {
 
 void handler_gethostbyname(AsyncEvent *event) {
-    char addr[SW_IP_MAX_LENGTH];
-    int ret = swoole::network::gethostbyname(event->flags, (char *) event->buf, addr);
-    sw_memset_zero(event->buf, event->nbytes);
+    char addr[INET6_ADDRSTRLEN];
+    auto req = dynamic_cast<GethostbynameRequest *>(event->data.get());
+    int ret = network::gethostbyname(req->family, req->name.c_str(), addr);
+    sw_memset_zero(req->addr, req->addr_len);
 
     if (ret < 0) {
         event->error = SW_ERROR_DNSLOOKUP_RESOLVE_FAILED;
     } else {
-        if (inet_ntop(event->flags, addr, (char *) event->buf, event->nbytes) == nullptr) {
+        if (inet_ntop(req->family, addr, req->addr, req->addr_len) == nullptr) {
             ret = -1;
             event->error = SW_ERROR_BAD_IPV6_ADDRESS;
         } else {
@@ -103,12 +108,12 @@ void handler_gethostbyname(AsyncEvent *event) {
             ret = 0;
         }
     }
-    event->ret = ret;
+    event->retval = ret;
 }
 
 void handler_getaddrinfo(AsyncEvent *event) {
-    swoole::network::GetaddrinfoRequest *req = (swoole::network::GetaddrinfoRequest *) event->req;
-    event->ret = swoole::network::getaddrinfo(req);
+    auto req = dynamic_cast<GetaddrinfoRequest *>(event->data.get());
+    event->retval = network::getaddrinfo(req);
     event->error = req->error;
 }
 

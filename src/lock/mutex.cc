@@ -10,7 +10,7 @@
   | to obtain it through the world-wide-web, please send a note to       |
   | license@swoole.com so we can mail you a copy immediately.            |
   +----------------------------------------------------------------------+
-  | Author: Tianfeng Han  <mikan.tenny@gmail.com>                        |
+  | Author: Tianfeng Han  <rango@swoole.com>                             |
   +----------------------------------------------------------------------+
 */
 
@@ -25,6 +25,8 @@ struct MutexImpl {
 };
 
 Mutex::Mutex(int flags) : Lock() {
+    flags_ = flags;
+
     if (flags & PROCESS_SHARED) {
         impl = (MutexImpl *) sw_mem_pool()->alloc(sizeof(*impl));
         if (impl == nullptr) {
@@ -40,29 +42,35 @@ Mutex::Mutex(int flags) : Lock() {
     pthread_mutexattr_init(&impl->attr_);
 
     if (flags & PROCESS_SHARED) {
+#ifdef HAVE_PTHREAD_MUTEXATTR_SETPSHARED
         pthread_mutexattr_setpshared(&impl->attr_, PTHREAD_PROCESS_SHARED);
+#else
+        swoole_warning("PTHREAD_MUTEX_PSHARED is not supported");
+#endif
     }
 
     if (flags & ROBUST) {
 #ifdef HAVE_PTHREAD_MUTEXATTR_SETROBUST
         pthread_mutexattr_setrobust(&impl->attr_, PTHREAD_MUTEX_ROBUST);
 #else
-        swWarn("PTHREAD_MUTEX_ROBUST is not supported");
+        swoole_warning("PTHREAD_MUTEX_ROBUST is not supported");
 #endif
     }
 
-    if (pthread_mutex_init(&impl->lock_, &impl->attr_) < 0) {
+    if (pthread_mutex_init(&impl->lock_, &impl->attr_) != 0) {
         throw std::system_error(errno, std::generic_category(), "pthread_mutex_init() failed");
     }
 }
 
 int Mutex::lock() {
     int retval = pthread_mutex_lock(&impl->lock_);
+
 #ifdef HAVE_PTHREAD_MUTEX_CONSISTENT
-    if (retval == EOWNERDEAD) {
+    if (retval == EOWNERDEAD && (flags_ & ROBUST)) {
         retval = pthread_mutex_consistent(&impl->lock_);
     }
 #endif
+
     return retval;
 }
 

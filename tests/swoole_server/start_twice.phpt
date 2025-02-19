@@ -8,14 +8,11 @@ require __DIR__ . '/../include/skipif.inc';
 <?php
 require __DIR__ . '/../include/bootstrap.php';
 
-use Swoole\Coroutine\Client;
-use Swoole\Timer;
-use Swoole\Event;
 use Swoole\Server;
 
 $pm = new SwooleTest\ProcessManager;
 $pm->parentFunc = function ($pid) use ($pm) {
-    $cli = new swoole_client(SWOOLE_SOCK_TCP, SWOOLE_SOCK_SYNC);
+    $cli = new Swoole\Client(SWOOLE_SOCK_TCP, SWOOLE_SOCK_SYNC);
     $cli->connect('127.0.0.1', $pm->getFreePort(), 0.5) or die("ERROR");
     $cli->send("signal") or die("ERROR");
 };
@@ -24,7 +21,7 @@ $pm->childFunc = function () use ($pm) {
     ini_set('swoole.display_errors', 'Off');
     $serv = new Server('127.0.0.1', $pm->getFreePort(), SWOOLE_BASE);
     $serv->set(array(
-        "worker_num" => 1,
+        'worker_num' => 1,
         'enable_coroutine' => false,
         'log_file' => '/dev/null',
     ));

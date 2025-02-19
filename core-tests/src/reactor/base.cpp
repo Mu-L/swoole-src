@@ -13,13 +13,15 @@
   | @link     https://www.swoole.com/                                    |
   | @contact  team@swoole.com                                            |
   | @license  https://github.com/swoole/swoole-src/blob/master/LICENSE   |
-  | @author   Tianfeng Han  <mikan.tenny@gmail.com>                      |
+  | @Author   Tianfeng Han  <rango@swoole.com>                           |
   +----------------------------------------------------------------------+
 */
 
 #include "test_core.h"
 #include "swoole_pipe.h"
+#include "swoole_util.h"
 
+using namespace std;
 using namespace swoole;
 
 TEST(reactor, create) {
@@ -38,20 +40,20 @@ TEST(reactor, create) {
     /**
      * coroutine socket reactor
      */
-    ASSERT_NE(reactor->read_handler[Reactor::get_fd_type(SW_FD_CORO_SOCKET | SW_EVENT_READ)], nullptr);
-    ASSERT_NE(reactor->write_handler[Reactor::get_fd_type(SW_FD_CORO_SOCKET | SW_EVENT_WRITE)], nullptr);
-    ASSERT_NE(reactor->error_handler[Reactor::get_fd_type(SW_FD_CORO_SOCKET | SW_EVENT_ERROR)], nullptr);
+    ASSERT_NE(reactor->read_handler[Reactor::get_fd_type(SW_FD_CO_SOCKET | SW_EVENT_READ)], nullptr);
+    ASSERT_NE(reactor->write_handler[Reactor::get_fd_type(SW_FD_CO_SOCKET | SW_EVENT_WRITE)], nullptr);
+    ASSERT_NE(reactor->error_handler[Reactor::get_fd_type(SW_FD_CO_SOCKET | SW_EVENT_ERROR)], nullptr);
 
     /**
      * system reactor
      */
-    ASSERT_NE(reactor->read_handler[Reactor::get_fd_type(SW_FD_CORO_POLL | SW_EVENT_READ)], nullptr);
-    ASSERT_NE(reactor->write_handler[Reactor::get_fd_type(SW_FD_CORO_POLL | SW_EVENT_WRITE)], nullptr);
-    ASSERT_NE(reactor->error_handler[Reactor::get_fd_type(SW_FD_CORO_POLL | SW_EVENT_ERROR)], nullptr);
+    ASSERT_NE(reactor->read_handler[Reactor::get_fd_type(SW_FD_CO_POLL | SW_EVENT_READ)], nullptr);
+    ASSERT_NE(reactor->write_handler[Reactor::get_fd_type(SW_FD_CO_POLL | SW_EVENT_WRITE)], nullptr);
+    ASSERT_NE(reactor->error_handler[Reactor::get_fd_type(SW_FD_CO_POLL | SW_EVENT_ERROR)], nullptr);
 
-    ASSERT_NE(reactor->read_handler[Reactor::get_fd_type(SW_FD_CORO_EVENT | SW_EVENT_READ)], nullptr);
-    ASSERT_NE(reactor->write_handler[Reactor::get_fd_type(SW_FD_CORO_EVENT | SW_EVENT_WRITE)], nullptr);
-    ASSERT_NE(reactor->error_handler[Reactor::get_fd_type(SW_FD_CORO_EVENT | SW_EVENT_ERROR)], nullptr);
+    ASSERT_NE(reactor->read_handler[Reactor::get_fd_type(SW_FD_CO_EVENT | SW_EVENT_READ)], nullptr);
+    ASSERT_NE(reactor->write_handler[Reactor::get_fd_type(SW_FD_CO_EVENT | SW_EVENT_WRITE)], nullptr);
+    ASSERT_NE(reactor->error_handler[Reactor::get_fd_type(SW_FD_CO_EVENT | SW_EVENT_ERROR)], nullptr);
 
     ASSERT_NE(reactor->read_handler[Reactor::get_fd_type(SW_FD_AIO | SW_EVENT_READ)], nullptr);
 
@@ -92,6 +94,7 @@ TEST(reactor, wait) {
     });
 
     ret = swoole_event_add(p.get_socket(false), SW_EVENT_READ);
+    ASSERT_EQ(swoole_event_get_socket(p.get_socket(false)->get_fd()), p.get_socket(false));
     ASSERT_EQ(ret, SW_OK);
 
     ret = p.write((void *) SW_STRS("hello world"));
@@ -106,12 +109,14 @@ TEST(reactor, write) {
     int ret;
     UnixSocket p(true, SOCK_DGRAM);
     ASSERT_TRUE(p.ready());
+    p.set_blocking(false);
+    p.set_buffer_size(65536);
 
     ret = swoole_event_init(SW_EVENTLOOP_WAIT_EXIT);
     ASSERT_EQ(ret, SW_OK);
     ASSERT_NE(SwooleTG.reactor, nullptr);
 
-    swoole_event_set_handler(SW_FD_PIPE | SW_EVENT_READ, [](Reactor *reactor, swEvent *ev) -> int {
+    swoole_event_set_handler(SW_FD_PIPE | SW_EVENT_READ, [](Reactor *reactor, Event *ev) -> int {
         char buffer[16];
 
         ssize_t n = read(ev->fd, buffer, sizeof(buffer));
@@ -125,12 +130,73 @@ TEST(reactor, write) {
     ret = swoole_event_add(p.get_socket(false), SW_EVENT_READ);
     ASSERT_EQ(ret, SW_OK);
 
-    ret = swoole_event_write(p.get_socket(true), (void *) SW_STRS("hello world"));
-    ASSERT_EQ(ret, sizeof("hello world"));
+    auto sock = p.get_socket(true);
+
+    auto n = swoole_event_write(sock, (void *) SW_STRS("hello world"));
+    ASSERT_EQ(n, sizeof("hello world"));
 
     ret = swoole_event_wait();
     ASSERT_EQ(ret, SW_OK);
     ASSERT_EQ(SwooleTG.reactor, nullptr);
+}
+
+constexpr int DATA_SIZE = 2 * SW_NUM_MILLION;
+
+TEST(reactor, write_2m) {
+    int ret;
+    UnixSocket p(true, SOCK_STREAM);
+    ASSERT_TRUE(p.ready());
+
+    ret = swoole_event_init(SW_EVENTLOOP_WAIT_EXIT);
+    ASSERT_EQ(ret, SW_OK);
+    ASSERT_NE(SwooleTG.reactor, nullptr);
+
+    swoole_event_set_handler(SW_FD_PIPE | SW_EVENT_READ, [](Reactor *reactor, Event *ev) -> int {
+        auto tg_buf = sw_tg_buffer();
+        ssize_t n = read(ev->fd, tg_buf->str + tg_buf->length, tg_buf->size - tg_buf->length);
+        if (n <= 0) {
+            return SW_ERR;
+        }
+        tg_buf->grow(n);
+        if (tg_buf->length == DATA_SIZE) {
+            tg_buf->append('\0');
+            reactor->del(ev->socket);
+        }
+        return SW_OK;
+    });
+
+    p.set_blocking(false);
+    p.set_buffer_size(65536);
+
+    ret = swoole_event_add(p.get_socket(false), SW_EVENT_READ);
+    ASSERT_EQ(ret, SW_OK);
+
+    String str(DATA_SIZE);
+    str.append_random_bytes(str.size - 1, false);
+    str.append('\0');
+
+    sw_tg_buffer()->clear();
+
+    auto n = swoole_event_write(p.get_socket(true), str.value(), str.get_length());
+    ASSERT_EQ(n, str.get_length());
+    ASSERT_GT(p.get_socket(true)->out_buffer->length(), 1024);
+
+    ret = swoole_event_wait();
+    ASSERT_EQ(ret, SW_OK);
+    ASSERT_FALSE(swoole_event_is_available());
+    ASSERT_STREQ(sw_tg_buffer()->value(), str.value());
+}
+
+TEST(reactor, bad_fd) {
+    swoole_event_init(SW_EVENTLOOP_WAIT_EXIT);
+    auto sock = make_socket(999999, SW_FD_STREAM_CLIENT);
+    sock->nonblock = 1;
+    auto n = swoole_event_write(sock, SW_STRL("hello world"));
+    ASSERT_EQ(n, SW_ERR);
+    ASSERT_EQ(swoole_get_last_error(), EBADF);
+    swoole_event_free();
+    sock->move_fd();
+    sock->free();
 }
 
 static const char *pkt = "hello world\r\n";
@@ -139,7 +205,7 @@ static void reactor_test_func(Reactor *reactor) {
     Pipe p(true);
     ASSERT_TRUE(p.ready());
 
-    reactor->set_handler(SW_FD_PIPE | SW_EVENT_READ, [](Reactor *reactor, swEvent *event) -> int {
+    reactor->set_handler(SW_FD_PIPE | SW_EVENT_READ, [](Reactor *reactor, Event *event) -> int {
         char buf[1024];
         size_t l = strlen(pkt);
         size_t n = read(event->fd, buf, sizeof(buf));
@@ -150,7 +216,7 @@ static void reactor_test_func(Reactor *reactor) {
 
         return SW_OK;
     });
-    reactor->set_handler(SW_FD_PIPE | SW_EVENT_WRITE, [](Reactor *reactor, swEvent *event) -> int {
+    reactor->set_handler(SW_FD_PIPE | SW_EVENT_WRITE, [](Reactor *reactor, Event *event) -> int {
         size_t l = strlen(pkt);
         EXPECT_EQ(write(event->fd, pkt, l), l);
         reactor->del(event->socket);
@@ -172,4 +238,138 @@ TEST(reactor, select) {
     Reactor reactor(1024, Reactor::TYPE_SELECT);
     reactor.wait_exit = true;
     reactor_test_func(&reactor);
+}
+
+TEST(reactor, add_or_update) {
+    int ret;
+    UnixSocket p(true, SOCK_DGRAM);
+    ASSERT_TRUE(p.ready());
+
+    ret = swoole_event_init(SW_EVENTLOOP_WAIT_EXIT);
+    ASSERT_EQ(ret, SW_OK);
+    ASSERT_NE(SwooleTG.reactor, nullptr);
+
+    ret = swoole_event_add_or_update(p.get_socket(false), SW_EVENT_READ);
+    ASSERT_EQ(ret, SW_OK);
+    ASSERT_TRUE(p.get_socket(false)->events & SW_EVENT_READ);
+
+    ret = swoole_event_add_or_update(p.get_socket(false), SW_EVENT_WRITE);
+    ASSERT_EQ(ret, SW_OK);
+    ASSERT_TRUE(p.get_socket(false)->events & SW_EVENT_READ);
+    ASSERT_TRUE(p.get_socket(false)->events & SW_EVENT_WRITE);
+
+    swoole_event_free();
+}
+
+TEST(reactor, defer_task) {
+    swoole_event_init(SW_EVENTLOOP_WAIT_EXIT);
+    Reactor *reactor = sw_reactor();
+    ASSERT_EQ(reactor->max_event_num, SW_REACTOR_MAXEVENTS);
+
+    int count = 0;
+    reactor->defer([&count](void *) { count++; });
+    swoole_event_wait();
+    ASSERT_EQ(count, 1);
+    swoole_event_free();
+}
+
+static void event_end_callback(void *data) {
+    ASSERT_STREQ((char *) data, "hello world");
+}
+
+TEST(reactor, cycle) {
+    Reactor reactor(1024, Reactor::TYPE_SELECT);
+    reactor.wait_exit = true;
+    reactor.activate_future_task();
+
+    const char *test = "hello world";
+    reactor.future_task.callback = event_end_callback;
+    reactor.future_task.data = (void *) test;
+    reactor_test_func(&reactor);
+}
+
+static void event_idle_callback(void *data) {
+    ASSERT_STREQ((char *) data, "hello world");
+}
+
+TEST(reactor, priority_idle_task) {
+    Reactor reactor(1024, Reactor::TYPE_SELECT);
+    reactor.wait_exit = true;
+    reactor.activate_future_task();
+
+    const char *test = "hello world";
+    reactor.idle_task.callback = event_idle_callback;
+    reactor.idle_task.data = (void *) test;
+    reactor_test_func(&reactor);
+}
+
+TEST(reactor, hook) {
+    Reactor *reactor = new Reactor(1024, Reactor::TYPE_SELECT);
+    reactor->wait_exit = true;
+
+    swoole_add_hook(
+        SW_GLOBAL_HOOK_ON_REACTOR_CREATE,
+        [](void *data) -> void {
+            Reactor *reactor = (Reactor *) data;
+            ASSERT_EQ(Reactor::TYPE_SELECT, reactor->type_);
+        },
+        1);
+
+    swoole_add_hook(
+        SW_GLOBAL_HOOK_ON_REACTOR_DESTROY,
+        [](void *data) -> void {
+            Reactor *reactor = (Reactor *) data;
+            ASSERT_EQ(Reactor::TYPE_SELECT, reactor->type_);
+        },
+        1);
+
+    ON_SCOPE_EXIT {
+        SwooleG.hooks[SW_GLOBAL_HOOK_ON_REACTOR_CREATE] = nullptr;
+        SwooleG.hooks[SW_GLOBAL_HOOK_ON_REACTOR_DESTROY] = nullptr;
+    };
+
+    reactor_test_func(reactor);
+    delete reactor;
+}
+
+TEST(reactor, set_fd) {
+    UnixSocket p(true, SOCK_DGRAM);
+    Reactor *reactor = new Reactor(1024, Reactor::TYPE_EPOLL);
+    ASSERT_EQ(reactor->add(p.get_socket(false), SW_EVENT_READ), SW_OK);
+    ASSERT_EQ(reactor->set(p.get_socket(false), SW_EVENT_WRITE), SW_OK);
+    delete reactor;
+
+    reactor = new Reactor(1024, Reactor::TYPE_POLL);
+    ASSERT_EQ(reactor->add(p.get_socket(false), SW_EVENT_READ), SW_OK);
+    ASSERT_EQ(reactor->set(p.get_socket(false), SW_EVENT_WRITE), SW_OK);
+    delete reactor;
+
+    reactor = new Reactor(1024, Reactor::TYPE_SELECT);
+    ASSERT_EQ(reactor->add(p.get_socket(false), SW_EVENT_READ), SW_OK);
+    ASSERT_EQ(reactor->set(p.get_socket(false), SW_EVENT_WRITE), SW_OK);
+    delete reactor;
+}
+
+static void error_event(Reactor::Type type) {
+    Pipe p(true);
+    ASSERT_TRUE(p.ready());
+
+    Reactor *reactor = new Reactor(1024, type);
+
+    reactor->set_handler(SW_FD_PIPE | SW_EVENT_ERROR, [](Reactor *reactor, Event *event) -> int {
+        EXPECT_EQ(reactor->del(event->socket), SW_OK);
+        reactor->running = false;
+        return SW_OK;
+    });
+
+    reactor->add(p.get_socket(true), SW_EVENT_ERROR);
+    reactor->add(p.get_socket(false), SW_EVENT_ERROR);
+
+    p.close(SW_PIPE_CLOSE_WORKER);
+    reactor->wait(nullptr);
+    delete reactor;
+}
+TEST(reactor, error_ev) {
+    error_event(Reactor::TYPE_EPOLL);
+    error_event(Reactor::TYPE_POLL);
 }

@@ -13,11 +13,11 @@
   | @link     https://www.swoole.com/                                    |
   | @contact  team@swoole.com                                            |
   | @license  https://github.com/swoole/swoole-src/blob/master/LICENSE   |
-  | @author   Tianfeng Han  <mikan.tenny@gmail.com>                      |
+  | @Author   Tianfeng Han  <rango@swoole.com>                           |
   +----------------------------------------------------------------------+
 */
 
-#include "test_core.h"
+#include "test_coroutine.h"
 #include "swoole_lock.h"
 #include "swoole_util.h"
 
@@ -26,8 +26,14 @@
 using swLock = swoole::Lock;
 
 using swoole::RWLock;
+#ifdef HAVE_SPINLOCK
 using swoole::SpinLock;
+#endif
 using swoole::Mutex;
+using swoole::CoroutineLock;
+using swoole::Coroutine;
+using swoole::test::coroutine;
+using swoole::coroutine::System;
 
 static void test_func(swLock &lock) {
     int count = 0;
@@ -50,9 +56,51 @@ static void test_func(swLock &lock) {
     ASSERT_EQ(count, N * 2);
 }
 
+static void test_lock_rd_func(swLock &lock) {
+    std::thread t1([&lock]() {
+        ASSERT_EQ(lock.lock_rd(), 0);
+        usleep(2000);  // wait
+        lock.unlock();
+    });
+
+    std::thread t2([&lock]() {
+        usleep(1000);
+        ASSERT_GE(lock.trylock_rd(), 0);
+    });
+
+    t1.join();
+    t2.join();
+}
+
+static void test_share_lock_fun(swLock &lock) {
+    lock.lock();
+    const int sleep_us = 10000;
+    int magic_num = swoole_rand(100000, 9999999);
+    int *_num = (int *) sw_mem_pool()->alloc(sizeof(int));
+    *_num = 0;
+
+    pid_t pid = fork();
+
+    if (pid == 0) {
+        lock.lock();
+        *_num = magic_num;
+        usleep(1);
+        exit(0);
+    } else {
+        usleep(sleep_us);
+        lock.unlock();
+        int status;
+        pid_t _pid = waitpid(pid, &status, 0);
+        if (_pid != pid) {
+            swoole_warning("error pid=%d", _pid);
+        }
+        ASSERT_EQ(*_num, magic_num);
+    }
+}
+
 TEST(lock, mutex) {
     Mutex lock(0);
-    test_func( reinterpret_cast<swLock &>(lock));
+    test_func(reinterpret_cast<swLock &>(lock));
 }
 
 TEST(lock, lockwait) {
@@ -83,44 +131,87 @@ TEST(lock, lockwait) {
 
 TEST(lock, shared) {
     Mutex lock(Mutex::PROCESS_SHARED);
+    test_share_lock_fun(lock);
+}
 
-    lock.lock();
+TEST(lock, try_rd) {
+    Mutex lock(0);
+    test_lock_rd_func(lock);
+}
 
-    const int sleep_us = 10000;
+TEST(lock, coroutine_lock) {
+    CoroutineLock *lock = new CoroutineLock(false);
+    ASSERT_EQ(lock->lock(), SW_ERROR_CO_OUT_OF_COROUTINE);
+    auto callback = [lock]() {
+        coroutine::run([lock](void *arg) {
+            Coroutine::create([lock](void *) {
+                ASSERT_EQ(lock->lock(), 0);
+                ASSERT_EQ(lock->lock(), 0);
+                System::sleep(1);
+                ASSERT_EQ(lock->unlock(), 0);
+            });
 
-    int magic_num = swoole_rand(100000, 9999999);
-    int *_num = (int *) sw_mem_pool()->alloc(sizeof(int));
-    *_num = 0;
+            Coroutine::create([lock](void *) {
+                ASSERT_EQ(lock->lock(), 0);
+                System::sleep(1);
+                ASSERT_EQ(lock->unlock(), 0);
+            });
 
-    pid_t pid = fork() ;
+            Coroutine::create([lock](void *) { ASSERT_EQ(lock->trylock(), EBUSY); });
+        });
+    };
 
-    if (pid == 0) {
-        lock.lock();
-        *_num = magic_num;
-        usleep(1);
-        exit(0);
-    } else {
-        usleep(sleep_us);
-        lock.unlock();
-        int status;
-        pid_t _pid = waitpid(pid, &status, 0);
-        if (_pid != pid ) {
-            swWarn("error pid=%d", _pid);
-        }
-        ASSERT_EQ(*_num, magic_num);
-    }
+    std::thread t1(callback);
+    t1.join();
+    delete lock;
 }
 
 #ifdef HAVE_RWLOCK
+TEST(lock, rwlock_shared) {
+    RWLock lock(Mutex::PROCESS_SHARED);
+    test_share_lock_fun(lock);
+}
+
 TEST(lock, rwlock) {
     RWLock lock(false);
     test_func(lock);
 }
+
+TEST(lock, rwlock_try_rd) {
+    RWLock lock(false);
+    test_lock_rd_func(lock);
+}
+
+TEST(lock, rw_try_wr) {
+    RWLock lock(false);
+    std::thread t1([&lock]() {
+        ASSERT_EQ(lock.lock(), 0);
+        usleep(2000);
+        lock.unlock();
+    });
+
+    std::thread t2([&lock]() {
+        usleep(1000);
+        ASSERT_GT(lock.trylock(), 0);
+    });
+    t1.join();
+    t2.join();
+}
 #endif
 
 #ifdef HAVE_SPINLOCK
+TEST(lock, spinlock_shared) {
+    SpinLock lock(Mutex::PROCESS_SHARED);
+    test_share_lock_fun(lock);
+}
+
 TEST(lock, spinlock) {
     SpinLock lock(false);
     test_func(lock);
+}
+
+TEST(lock, spinlock_try_rd) {
+    SpinLock lock(false);
+    test_lock_rd_func(lock);
 }
 #endif

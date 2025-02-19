@@ -13,7 +13,7 @@
   | @link     https://www.swoole.com/                                    |
   | @contact  team@swoole.com                                            |
   | @license  https://github.com/swoole/swoole-src/blob/master/LICENSE   |
-  | @author   Tianfeng Han  <mikan.tenny@gmail.com>                      |
+  | @Author   Tianfeng Han  <rango@swoole.com>                           |
   +----------------------------------------------------------------------+
 */
 
@@ -27,7 +27,7 @@ namespace swoole {
 
 #define SW_CHANNEL_MIN_MEM (1024 * 64)
 
-struct Channel_item {
+struct ChannelSlice {
     int length;
     char data[0];
 };
@@ -41,13 +41,13 @@ Channel *Channel::make(size_t size, size_t maxlen, int flags) {
         /**
          * overflow space
          */
-        mem = sw_shm_malloc(size + sizeof(Channel) + maxlen + sizeof(Channel_item));
+        mem = sw_shm_malloc(size + sizeof(Channel) + maxlen + sizeof(ChannelSlice));
     } else {
-        mem = sw_malloc(size + sizeof(Channel) + maxlen + sizeof(Channel_item));
+        mem = sw_malloc(size + sizeof(Channel) + maxlen + sizeof(ChannelSlice));
     }
 
     if (mem == nullptr) {
-        swWarn("alloc(%ld) failed", size);
+        swoole_warning("alloc(%ld) failed", size);
         return nullptr;
     }
 
@@ -71,7 +71,7 @@ Channel *Channel::make(size_t size, size_t maxlen, int flags) {
     if (flags & SW_CHAN_NOTIFY) {
         object->notify_pipe = new Pipe(true);
         if (!object->notify_pipe->ready()) {
-            swWarn("notify_fd init failed");
+            swoole_warning("notify_fd init failed");
             delete object->notify_pipe;
             return nullptr;
         }
@@ -88,7 +88,7 @@ int Channel::in(const void *in_data, int data_length) {
     if (full()) {
         return SW_ERR;
     }
-    Channel_item *item;
+    ChannelSlice *item;
     int msize = sizeof(item->length) + data_length;
 
     if (tail < head) {
@@ -96,10 +96,10 @@ int Channel::in(const void *in_data, int data_length) {
         if ((head - tail) < msize) {
             return SW_ERR;
         }
-        item = (Channel_item *) ((char *) mem + tail);
+        item = (ChannelSlice *) ((char *) mem + tail);
         tail += msize;
     } else {
-        item = (Channel_item *) ((char *) mem + tail);
+        item = (ChannelSlice *) ((char *) mem + tail);
         tail += msize;
         if (tail >= (off_t) size) {
             tail = 0;
@@ -121,7 +121,7 @@ int Channel::out(void *out_buf, int buffer_length) {
         return SW_ERR;
     }
 
-    Channel_item *item = (Channel_item *) ((char *) mem + head);
+    ChannelSlice *item = (ChannelSlice *) ((char *) mem + head);
     assert(buffer_length >= item->length);
     memcpy(out_buf, item->data, item->length);
     head += (item->length + sizeof(item->length));
@@ -144,7 +144,7 @@ int Channel::peek(void *out, int buffer_length) {
 
     int length;
     lock->lock();
-    Channel_item *item = (Channel_item *) ((char *) mem + head);
+    ChannelSlice *item = (ChannelSlice *) ((char *) mem + head);
     assert(buffer_length >= item->length);
     memcpy(out, item->data, item->length);
     length = item->length;

@@ -1,6 +1,6 @@
 #include "php_swoole_cxx.h"
 
-//----------------------------------Swoole known string------------------------------------
+//----------------------------------known string------------------------------------
 
 static const char *sw_known_strings[] = {
 #define _SW_ZEND_STR_DSC(id, str) str,
@@ -10,74 +10,14 @@ static const char *sw_known_strings[] = {
 
 SW_API zend_string **sw_zend_known_strings = nullptr;
 
-//----------------------------------Swoole known string------------------------------------
+SW_API zend_refcounted *sw_refcount_ptr;
 
-#if PHP_VERSION_ID < 80000
-typedef zval zend_source_string_t;
-#else
-typedef zend_string zend_source_string_t;
-#endif
-
-static zend_op_array *swoole_compile_string(zend_source_string_t *source_string, ZEND_STR_CONST char *filename);
-
-// for compatibly with dis_eval
-static zend_op_array *(*old_compile_string)(zend_source_string_t *source_string, ZEND_STR_CONST char *filename);
-
-static zend_op_array *swoole_compile_string(zend_source_string_t *source_string, ZEND_STR_CONST char *filename) {
-    zend_op_array *opa = old_compile_string(source_string, filename);
-    opa->type = ZEND_USER_FUNCTION;
-    return opa;
+zend_refcounted *sw_get_refcount_ptr(zval *value) {
+    return (sw_refcount_ptr = value->value.counted);
 }
 
+//----------------------------------known string------------------------------------
 namespace zend {
-bool include(const std::string &file) {
-    zend_file_handle file_handle;
-    int ret = php_stream_open_for_zend_ex(file.c_str(), &file_handle, USE_PATH | STREAM_OPEN_FOR_INCLUDE);
-    if (ret != SUCCESS) {
-        return false;
-    }
-
-    zend_string *opened_path;
-    if (!file_handle.opened_path) {
-        file_handle.opened_path = zend_string_init(file.c_str(), file.length(), 0);
-    }
-    opened_path = zend_string_copy(file_handle.opened_path);
-    zval dummy;
-
-    zval retval;
-    zend_op_array *new_op_array;
-    ZVAL_NULL(&dummy);
-    if (zend_hash_add(&EG(included_files), opened_path, &dummy)) {
-        new_op_array = zend_compile_file(&file_handle, ZEND_REQUIRE);
-        zend_destroy_file_handle(&file_handle);
-    } else {
-        new_op_array = nullptr;
-        zend_file_handle_dtor(&file_handle);
-    }
-    zend_string_release(opened_path);
-    if (!new_op_array) {
-        return false;
-    }
-
-    zend_execute(new_op_array, &retval);
-
-    destroy_op_array(new_op_array);
-    efree(new_op_array);
-    return Z_TYPE(retval) == IS_TRUE;
-}
-
-bool eval(const std::string &code, std::string const &filename) {
-    if (!old_compile_string) {
-        old_compile_string = zend_compile_string;
-    }
-    // overwrite
-    zend_compile_string = swoole_compile_string;
-    int ret = (zend_eval_stringl((char *) code.c_str(), code.length(), nullptr, (char *) filename.c_str()) == SUCCESS);
-    // recover
-    zend_compile_string = old_compile_string;
-    return ret;
-}
-
 void known_strings_init(void) {
     zend_string *str;
     sw_zend_known_strings = nullptr;
@@ -96,10 +36,6 @@ void known_strings_dtor(void) {
     sw_zend_known_strings = nullptr;
 }
 
-zend_string *fetch_zend_string_by_val(char *val) {
-    return (zend_string *) (val - XtOffsetOf(zend_string, val));
-}
-
 namespace function {
 
 bool call(zend_fcall_info_cache *fci_cache, uint32_t argc, zval *argv, zval *retval, const bool enable_coroutine) {
@@ -109,7 +45,7 @@ bool call(zend_fcall_info_cache *fci_cache, uint32_t argc, zval *argv, zval *ret
             /* the coroutine has no return value */
             ZVAL_NULL(retval);
         }
-        success = swoole::PHPCoroutine::create(fci_cache, argc, argv) >= 0;
+        success = swoole::PHPCoroutine::create(fci_cache, argc, argv, nullptr) >= 0;
     } else {
         success = sw_zend_call_function_ex(nullptr, fci_cache, argc, argv, retval) == SUCCESS;
     }
@@ -120,10 +56,10 @@ bool call(zend_fcall_info_cache *fci_cache, uint32_t argc, zval *argv, zval *ret
     return success;
 }
 
-ReturnValue call(const std::string &func_name, int argc, zval *argv) {
+Variable call(const std::string &func_name, int argc, zval *argv) {
     zval function_name;
     ZVAL_STRINGL(&function_name, func_name.c_str(), func_name.length());
-    ReturnValue retval;
+    Variable retval;
     if (call_user_function(EG(function_table), NULL, &function_name, &retval.value, argc, argv) != SUCCESS) {
         ZVAL_NULL(&retval.value);
     }
@@ -136,4 +72,31 @@ ReturnValue call(const std::string &func_name, int argc, zval *argv) {
 }
 
 }  // namespace function
+
+Callable::Callable(zval *_zfn) {
+    ZVAL_UNDEF(&zfn);
+    if (!zval_is_true(_zfn)) {
+        php_swoole_fatal_error(E_WARNING, "illegal callback function");
+        return;
+    }
+    if (!sw_zend_is_callable_ex(_zfn, nullptr, 0, &fn_name, nullptr, &fcc, nullptr)) {
+        php_swoole_fatal_error(E_WARNING, "function '%s' is not callable", fn_name);
+        return;
+    }
+    zfn = *_zfn;
+    zval_add_ref(&zfn);
+}
+
+Callable::~Callable() {
+    if (!ZVAL_IS_UNDEF(&zfn)) {
+        zval_ptr_dtor(&zfn);
+    }
+    if (fn_name) {
+        efree(fn_name);
+    }
+}
+
+uint32_t Callable::refcount() {
+    return zval_refcount_p(&zfn);
+}
 }  // namespace zend

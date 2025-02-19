@@ -31,6 +31,105 @@
  * Minimum required PHP version: 7.0.0
  */
 
+function show_usage(): void
+{
+    echo <<<HELP
+Synopsis:
+    php run-tests.php [options] [files] [directories]
+
+Options:
+    -j<workers> Run up to <workers> simultaneous testing processes in parallel for
+                quicker testing on systems with multiple logical processors.
+                Note that this is experimental feature.
+
+    -l <file>   Read the testfiles to be executed from <file>. After the test
+                has finished all failed tests are written to the same <file>.
+                If the list is empty and no further test is specified then
+                all tests are executed (same as: -r <file> -w <file>).
+
+    -r <file>   Read the testfiles to be executed from <file>.
+
+    -w <file>   Write a list of all failed tests to <file>.
+
+    -a <file>   Same as -w but append rather then truncating <file>.
+
+    -W <file>   Write a list of all tests and their result status to <file>.
+
+    -c <file>   Look for php.ini in directory <file> or use <file> as ini.
+
+    -n          Pass -n option to the php binary (Do not use a php.ini).
+
+    -d foo=bar  Pass -d option to the php binary (Define INI entry foo
+                with value 'bar').
+
+    -g          Comma separated list of groups to show during test run
+                (possible values: PASS, FAIL, XFAIL, XLEAK, SKIP, BORK, WARN, LEAK, REDIRECT).
+
+    -m          Test for memory leaks with Valgrind (equivalent to -M memcheck).
+
+    -M <tool>   Test for errors with Valgrind tool.
+
+    -p <php>    Specify PHP executable to run.
+
+    -P          Use PHP_BINARY as PHP executable to run (default).
+
+    -q          Quiet, no user interaction (same as environment NO_INTERACTION).
+
+    -s <file>   Write output to <file>.
+
+    -x          Sets 'SKIP_SLOW_TESTS' environmental variable.
+
+    --offline   Sets 'SKIP_ONLINE_TESTS' environmental variable.
+
+    --verbose
+    -v          Verbose mode.
+
+    --help
+    -h          This Help.
+
+    --temp-source <sdir>  --temp-target <tdir> [--temp-urlbase <url>]
+                Write temporary files to <tdir> by replacing <sdir> from the
+                filenames to generate with <tdir>. In general you want to make
+                <sdir> the path to your source files and <tdir> some patch in
+                your web page hierarchy with <url> pointing to <tdir>.
+
+    --keep-[all|php|skip|clean]
+                Do not delete 'all' files, 'php' test file, 'skip' or 'clean'
+                file.
+
+    --set-timeout [n]
+                Set timeout for individual tests, where [n] is the number of
+                seconds. The default value is 60 seconds, or 300 seconds when
+                testing for memory leaks.
+
+    --context [n]
+                Sets the number of lines of surrounding context to print for diffs.
+                The default value is 3.
+
+    --show-[all|php|skip|clean|exp|diff|out|mem]
+                Show 'all' files, 'php' test file, 'skip' or 'clean' file. You
+                can also use this to show the output 'out', the expected result
+                'exp', the difference between them 'diff' or the valgrind log
+                'mem'. The result types get written independent of the log format,
+                however 'diff' only exists when a test fails.
+
+    --show-slow [n]
+                Show all tests that took longer than [n] milliseconds to run.
+
+    --no-clean  Do not execute clean section if any.
+
+    --color
+    --no-color  Do/Don't colorize the result type in the test result.
+
+    --repeat [n]
+                Run the tests multiple times in the same process and check the
+                output of the last execution (CLI SAPI only).
+
+    --bless     Bless failed tests using scripts/dev/bless_tests.php.
+
+HELP;
+}
+
 /**
  * One function to rule them all, one function to find them, one function to
  * bring them all and in the darkness bind them.
@@ -57,7 +156,7 @@ function main()
     // Parallel testing
     global $workers, $workerID;
 
-    define('IS_WINDOWS', substr(PHP_OS, 0, 3) == "WIN");
+    define('IS_WINDOWS', str_starts_with(PHP_OS, "WIN"));
 
     $workerID = 0;
     if (getenv("TEST_PHP_WORKER")) {
@@ -84,7 +183,7 @@ function main()
 +-----------------------------------------------------------+
 
 NO_PROC_OPEN_ERROR;
-        exit(1);
+        exit(200);
     }
 
     // If timezone is not set, use UTC.
@@ -232,18 +331,18 @@ NO_PROC_OPEN_ERROR;
     if (getenv('SHOW_ONLY_GROUPS')) {
         $SHOW_ONLY_GROUPS = explode(",", getenv('SHOW_ONLY_GROUPS'));
     } else {
-        $SHOW_ONLY_GROUPS = array();
+        $SHOW_ONLY_GROUPS = [];
     }
 
     // Check whether user test dirs are requested.
     if (getenv('TEST_PHP_USER')) {
         $user_tests = explode(',', getenv('TEST_PHP_USER'));
     } else {
-        $user_tests = array();
+        $user_tests = [];
     }
 
-    $exts_to_test = array();
-    $ini_overwrites = array(
+    $exts_to_test = [];
+    $ini_overwrites = [
         'output_handler=',
         'open_basedir=',
         'disable_functions=',
@@ -265,36 +364,42 @@ NO_PROC_OPEN_ERROR;
         'ignore_repeated_errors=0',
         'precision=14',
         'serialize_precision=-1',
-        'memory_limit=128M',
+        'memory_limit=1024M',
         'log_errors_max_len=0',
         'opcache.fast_shutdown=0',
         'opcache.file_update_protection=0',
         'opcache.revalidate_freq=0',
+        'opcache.jit_hot_loop=1',
+        'opcache.jit_hot_func=1',
+        'opcache.jit_hot_return=1',
+        'opcache.jit_hot_side_exit=1',
         'zend.assertions=1',
         'zend.exception_ignore_args=0',
-    );
+        'zend.exception_string_param_max_len=15',
+        'short_open_tag=0',
+    ];
 
     $no_file_cache = '-d opcache.file_cache= -d opcache.file_cache_only=0';
 
     define('PHP_QA_EMAIL', 'qa-reports@lists.php.net');
     define('QA_SUBMISSION_PAGE', 'http://qa.php.net/buildtest-process.php');
     define('QA_REPORTS_PAGE', 'http://qa.php.net/reports');
-    define('TRAVIS_CI', (bool)getenv('TRAVIS'));
+    define('TRAVIS_CI', (bool) getenv('TRAVIS'));
 
     // Determine the tests to be run.
 
-    $test_files = array();
-    $redir_tests = array();
-    $test_results = array();
-    $PHP_FAILED_TESTS = array(
-        'BORKED' => array(),
-        'FAILED' => array(),
-        'WARNED' => array(),
-        'LEAKED' => array(),
-        'XFAILED' => array(),
-        'XLEAKED' => array(),
-        'SLOW' => array()
-    );
+    $test_files = [];
+    $redir_tests = [];
+    $test_results = [];
+    $PHP_FAILED_TESTS = [
+        'BORKED' => [],
+        'FAILED' => [],
+        'WARNED' => [],
+        'LEAKED' => [],
+        'XFAILED' => [],
+        'XLEAKED' => [],
+        'SLOW' => []
+    ];
 
     // If parameters given assume they represent selected tests to run.
     $result_tests_file = false;
@@ -318,12 +423,12 @@ NO_PROC_OPEN_ERROR;
     $shuffle = false;
     $workers = null;
 
-    $cfgtypes = array('show', 'keep');
-    $cfgfiles = array('skip', 'php', 'clean', 'out', 'diff', 'exp', 'mem');
-    $cfg = array();
+    $cfgtypes = ['show', 'keep'];
+    $cfgfiles = ['skip', 'php', 'clean', 'out', 'diff', 'exp', 'mem'];
+    $cfg = [];
 
     foreach ($cfgtypes as $type) {
-        $cfg[$type] = array();
+        $cfg[$type] = [];
 
         foreach ($cfgfiles as $file) {
             $cfg[$type][$file] = false;
@@ -331,7 +436,7 @@ NO_PROC_OPEN_ERROR;
     }
 
     if (!isset($argc, $argv) || !$argc) {
-        $argv = array(__FILE__);
+        $argv = [__FILE__];
         $argc = 1;
     }
 
@@ -352,7 +457,6 @@ NO_PROC_OPEN_ERROR;
         $repeat = substr($argv[$i], 0, 1) == '-';
 
         while ($repeat) {
-
             if (!$is_switch) {
                 $switch = substr($argv[$i], 1, 1);
             }
@@ -397,9 +501,9 @@ NO_PROC_OPEN_ERROR;
                     $test_list = file($argv[++$i]);
                     if ($test_list) {
                         foreach ($test_list as $test) {
-                            $matches = array();
+                            $matches = [];
                             if (preg_match('/^#.*\[(.*)\]\:\s+(.*)$/', $test, $matches)) {
-                                $redir_tests[] = array($matches[1], $matches[2]);
+                                $redir_tests[] = [$matches[1], $matches[2]];
                             } else {
                                 if (strlen($test)) {
                                     $test_files[] = trim($test);
@@ -411,7 +515,7 @@ NO_PROC_OPEN_ERROR;
                         break;
                     }
                     $i--;
-                // break left intentionally
+                // no break
                 case 'w':
                     $failed_tests_file = fopen($argv[++$i], 'w+t');
                     break;
@@ -539,100 +643,15 @@ NO_PROC_OPEN_ERROR;
                     break;
                 case '--version':
                     echo '$Id: ebcaabba02a5af6f5dc62dda027befb95385d5fc $' . "\n";
-                    exit(1);
+                    exit(2);
 
                 default:
                     echo "Illegal switch '$switch' specified!\n";
                 case 'h':
                 case '-help':
                 case '--help':
-                    echo <<<HELP
-Synopsis:
-    php run-tests.php [options] [files] [directories]
-
-Options:
-    -j<workers> Run up to <workers> simultaneous testing processes in parallel for
-                quicker testing on systems with multiple logical processors.
-                Note that this is experimental feature.
-
-    -l <file>   Read the testfiles to be executed from <file>. After the test
-                has finished all failed tests are written to the same <file>.
-                If the list is empty and no further test is specified then
-                all tests are executed (same as: -r <file> -w <file>).
-
-    -r <file>   Read the testfiles to be executed from <file>.
-
-    -w <file>   Write a list of all failed tests to <file>.
-
-    -a <file>   Same as -w but append rather then truncating <file>.
-
-    -W <file>   Write a list of all tests and their result status to <file>.
-
-    -c <file>   Look for php.ini in directory <file> or use <file> as ini.
-
-    -n          Pass -n option to the php binary (Do not use a php.ini).
-
-    -d foo=bar  Pass -d option to the php binary (Define INI entry foo
-                with value 'bar').
-
-    -g          Comma separated list of groups to show during test run
-                (possible values: PASS, FAIL, XFAIL, XLEAK, SKIP, BORK, WARN, LEAK, REDIRECT).
-
-    -m          Test for memory leaks with Valgrind (equivalent to -M memcheck).
-
-    -M <tool>   Test for errors with Valgrind tool.
-
-    -p <php>    Specify PHP executable to run.
-
-    -P          Use PHP_BINARY as PHP executable to run (default).
-
-    -q          Quiet, no user interaction (same as environment NO_INTERACTION).
-
-    -s <file>   Write output to <file>.
-
-    -x          Sets 'SKIP_SLOW_TESTS' environmental variable.
-
-    --offline   Sets 'SKIP_ONLINE_TESTS' environmental variable.
-
-    --verbose
-    -v          Verbose mode.
-
-    --help
-    -h          This Help.
-
-    --html <file> Generate HTML output.
-
-    --temp-source <sdir>  --temp-target <tdir> [--temp-urlbase <url>]
-                Write temporary files to <tdir> by replacing <sdir> from the
-                filenames to generate with <tdir>. If --html is being used and
-                <url> given then the generated links are relative and prefixed
-                with the given url. In general you want to make <sdir> the path
-                to your source files and <tdir> some patch in your web page
-                hierarchy with <url> pointing to <tdir>.
-
-    --keep-[all|php|skip|clean]
-                Do not delete 'all' files, 'php' test file, 'skip' or 'clean'
-                file.
-
-    --set-timeout [n]
-                Set timeout for individual tests, where [n] is the number of
-                seconds. The default value is 60 seconds, or 300 seconds when
-                testing for memory leaks.
-
-    --show-[all|php|skip|clean|exp|diff|out|mem]
-                Show 'all' files, 'php' test file, 'skip' or 'clean' file. You
-                can also use this to show the output 'out', the expected result
-                'exp', the difference between them 'diff' or the valgrind log
-                'mem'. The result types get written independent of the log format,
-                however 'diff' only exists when a test fails.
-
-    --show-slow [n]
-                Show all tests that took longer than [n] milliseconds to run.
-
-    --no-clean  Do not execute clean section if any.
-
-HELP;
-                    exit(1);
+                    show_usage();
+                    exit(2);
             }
         }
 
@@ -676,7 +695,7 @@ HELP;
         $environment['TEST_PHP_EXECUTABLE'] = $php;
     }
 
-    if (strlen($conf_passed)) {
+    if ($conf_passed && strlen($conf_passed)) {
         if (IS_WINDOWS) {
             $pass_options .= " -c " . escapeshellarg($conf_passed);
         } else {
@@ -738,7 +757,7 @@ HELP;
 
         if (getenv('REPORT_EXIT_STATUS') !== '0' &&
             getenv('REPORT_EXIT_STATUS') !== 'no' && ($sum_results['FAILED'] || $sum_results['BORKED'] || $sum_results['LEAKED'])) {
-            exit(1);
+            exit(201);
         }
 
         return;
@@ -815,7 +834,7 @@ HELP;
     junit_save_xml();
     if (getenv('REPORT_EXIT_STATUS') !== '0' &&
         getenv('REPORT_EXIT_STATUS') !== 'no' && ($sum_results['FAILED'] || $sum_results['LEAKED'])) {
-        exit(1);
+        exit(202);
     }
     exit(0);
 }
@@ -832,6 +851,11 @@ if (!function_exists("hrtime")) {
         $s = floor($t);
         return array(0 => $s, 1 => ($t - $s) * 1000000000);
     }
+}
+
+function get_shortname($file)
+{
+    return str_replace(TEST_PHP_SRCDIR . '/', '', $file);
 }
 
 function verify_config()
@@ -981,8 +1005,8 @@ function save_or_mail_results()
             if ($sum_results['FAILED']) {
                 foreach ($PHP_FAILED_TESTS['FAILED'] as $test_info) {
                     $failed_tests_data .= $sep . $test_info['name'] . $test_info['info'];
-                    $failed_tests_data .= $sep . file_get_contents(realpath($test_info['output']), FILE_BINARY);
-                    $failed_tests_data .= $sep . file_get_contents(realpath($test_info['diff']), FILE_BINARY);
+                    $failed_tests_data .= $sep . file_get_contents(realpath($test_info['output']));
+                    $failed_tests_data .= $sep . file_get_contents(realpath($test_info['diff']));
                     $failed_tests_data .= $sep . "\n\n";
                 }
                 $status = "failed";
@@ -1178,12 +1202,12 @@ function save_text($filename, $text, $filename_copy = null)
     global $DETAILED;
 
     if ($filename_copy && $filename_copy != $filename) {
-        if (file_put_contents($filename_copy, $text, FILE_BINARY) === false) {
+        if (file_put_contents($filename_copy, $text) === false) {
             error("Cannot open file '" . $filename_copy . "' (save_text)");
         }
     }
 
-    if (file_put_contents($filename, $text, FILE_BINARY) === false) {
+    if (file_put_contents($filename, $text) === false) {
         error("Cannot open file '" . $filename . "' (save_text)");
     }
 
@@ -1291,6 +1315,12 @@ function system_with_timeout($commandline, $env = null, $stdin = null, $captureS
                 break;
             }
             $data .= $line;
+            if (strlen($data) > SWOOLE_TEST_OUTPUT_MAX_SIZE) {
+                echo "FATAL ERROR: The output content exceeds the maximum size\n";
+                echo "========================================================\n";
+                echo substr($data, 0, 65536);
+                exit(253);
+            }
         }
     }
 
@@ -1332,6 +1362,13 @@ function run_all_tests($test_files, $env, $redir_tested = null)
             $index = $name;
         }
         $test_idx++;
+
+        if ($workerID) {
+            send_message($workerSock, [
+                    "type" => "begin",
+                    "file" => $name,
+            ]);
+        }
 
         if ($workerID) {
             $PHP_FAILED_TESTS = ['BORKED' => [], 'FAILED' => [], 'WARNED' => [], 'LEAKED' => [], 'XFAILED' => [], 'XLEAKED' => [], 'SLOW' => []];
@@ -1541,7 +1578,7 @@ function run_all_tests_parallel($test_files, $env, $redir_tested) {
                         $rawMessage = $rawMessageBuffers[$i] . $rawMessage;
                         $rawMessageBuffers[$i] = '';
                     }
-                    if (substr($rawMessage, -1) !== "\n") {
+                    if (!str_ends_with($rawMessage, "\n")) {
                         $rawMessageBuffers[$i] = $rawMessage;
                         continue;
                     }
@@ -1615,6 +1652,11 @@ function run_all_tests_parallel($test_files, $env, $redir_tested) {
                                 goto escape;
                             }
                             break;
+                        case "begin":
+                            if (!$SHOW_ONLY_GROUPS) {
+                                show_test($test_idx, get_shortname($message['file']));
+                            }
+                            break;
                         case "test_result":
                             list($name, $index, $result, $resultText) = [$message["name"], $message["index"], $message["result"], $message["text"]];
                             foreach ($message["PHP_FAILED_TESTS"] as $category => $tests) {
@@ -1627,10 +1669,6 @@ function run_all_tests_parallel($test_files, $env, $redir_tested) {
                             }
 
                             echo $resultText;
-
-                            if (!$SHOW_ONLY_GROUPS) {
-                                show_test($test_idx, count($workerProcs) . "/$workers concurrent test workers running");
-                            }
 
                             if (!is_array($name) && $result != 'REDIR') {
                                 $test_results[$index] = $result;
@@ -1921,7 +1959,7 @@ TEST $file
                     $section_text[$key] = dirname($file) . '/' . trim(str_replace('..', '', $section_text[$key]));
 
                     if (file_exists($section_text[$key])) {
-                        $section_text[$prefix] = file_get_contents($section_text[$key], FILE_BINARY);
+                        $section_text[$prefix] = file_get_contents($section_text[$key]);
                         unset($section_text[$key]);
                     } else {
                         $bork_info = "could not load --" . $key . "-- " . dirname($file) . '/' . trim($section_text[$key]);
@@ -1936,7 +1974,7 @@ TEST $file
     }
     fclose($fp);
 
-    $shortname = str_replace(TEST_PHP_SRCDIR . '/', '', $file);
+    $shortname = get_shortname($file);
     $tested_file = $shortname;
 
     if ($bork_info !== null) {
@@ -2018,6 +2056,7 @@ TEST $file
 
     if (!$SHOW_ONLY_GROUPS && !$workerID) {
         show_test($test_idx, $shortname);
+        echo PHP_EOL;
     }
 
     if (is_array($IN_REDIRECT)) {
@@ -2760,12 +2799,12 @@ COMMAND $cmd
     if (!$passed) {
 
         // write .exp
-        if (strpos($log_format, 'E') !== false && file_put_contents($exp_filename, $wanted, FILE_BINARY) === false) {
+        if (strpos($log_format, 'E') !== false && file_put_contents($exp_filename, $wanted) === false) {
             error("Cannot create expected test output - $exp_filename");
         }
 
         // write .out
-        if (strpos($log_format, 'O') !== false && file_put_contents($output_filename, $output, FILE_BINARY) === false) {
+        if (strpos($log_format, 'O') !== false && file_put_contents($output_filename, $output) === false) {
             error("Cannot create test output - $output_filename");
         }
 
@@ -2783,7 +2822,7 @@ COMMAND $cmd
             @`lsof -i:{$port} | grep LISTEN | awk '{print $2}' | xargs kill -9 > /dev/null 2>&1`;
         }
 
-        if (strpos($log_format, 'D') !== false && file_put_contents($diff_filename, $diff, FILE_BINARY) === false) {
+        if (strpos($log_format, 'D') !== false && file_put_contents($diff_filename, $diff) === false) {
             error("Cannot create test diff - $diff_filename");
         }
 
@@ -2791,7 +2830,7 @@ COMMAND $cmd
         if (strpos($log_format, 'S') !== false && file_put_contents($sh_filename, "#!/bin/sh
 
 {$cmd}
-", FILE_BINARY) === false) {
+") === false) {
             error("Cannot create test shell script - $sh_filename");
         }
         chmod($sh_filename, 0755);
@@ -2803,7 +2842,7 @@ $wanted
 ---- ACTUAL OUTPUT
 $output
 ---- FAILED
-", FILE_BINARY) === false) {
+") === false) {
             error("Cannot create test log - $log_filename");
             error_report($file, $log_filename, $tested);
         }
@@ -2967,7 +3006,7 @@ function generate_diff($wanted, $wanted_re, $output)
 function error($message)
 {
     echo "ERROR: {$message}\n";
-    exit(1);
+    exit(240);
 }
 
 function settings2array($settings, &$ini_settings)
@@ -3295,7 +3334,7 @@ function show_test($test_idx, $shortname)
     global $line_length;
 
     // swoole patch: pretty output
-    $str = "TEST $test_idx/$test_cnt ";
+    $str = "TEST $test_idx/$test_cnt [$shortname]";
     $line_length = strlen($str);
     echo $str;
     flush();
@@ -3308,7 +3347,7 @@ function clear_show_test() {
 
     if (!$workerID) {
         // Write over the last line to avoid random trailing chars on next echo
-        echo str_repeat(" ", $line_length), "\r";
+        echo str_repeat(" ", intval($line_length)), "\r";
     }
 }
 
@@ -3742,7 +3781,7 @@ class RuntestsValgrind
 }
 
 // swoole patch: color const
-define('SWOOLE_TEST_TIMEOUT', file_exists('/.travisenv') ? 10 : 30);
+define('SWOOLE_TEST_TIMEOUT', file_exists('/.cienv') ? 10 : 30);
 define('SWOOLE_COLOR_RED', 1);
 define('SWOOLE_COLOR_GREEN', 2);
 define('SWOOLE_COLOR_YELLOW', 3);
@@ -3750,6 +3789,7 @@ define('SWOOLE_COLOR_BLUE', 4);
 define('SWOOLE_COLOR_MAGENTA', 5);
 define('SWOOLE_COLOR_CYAN', 6);
 define('SWOOLE_COLOR_WHITE', 7);
+define('SWOOLE_TEST_OUTPUT_MAX_SIZE', 64 * 1024 * 1024);
 // swoole patch: libc check
 define('SWOOLE_IS_MUSL_LIBC', !empty(`ldd 2>&1 | grep -i musl`));
 

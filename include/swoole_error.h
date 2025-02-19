@@ -10,7 +10,7 @@
   | to obtain it through the world-wide-web, please send a note to       |
   | license@swoole.com so we can mail you a copy immediately.            |
   +----------------------------------------------------------------------+
-  | Author: Tianfeng Han  <mikan.tenny@gmail.com>                        |
+  | Author: Tianfeng Han  <rango@swoole.com>                             |
   +----------------------------------------------------------------------+
 */
 
@@ -34,15 +34,27 @@ enum swErrorCode {
     SW_ERROR_OPERATION_NOT_SUPPORT,
     SW_ERROR_PROTOCOL_ERROR,
     SW_ERROR_WRONG_OPERATION,
+    SW_ERROR_PHP_RUNTIME_NOTICE, // Non-fatal errors, just runtime warnings
+    SW_ERROR_FOR_TEST,
+
+    SW_ERROR_NO_PAYLOAD = 550,
+
+    SW_ERROR_UNDEFINED_BEHAVIOR = 600,
+    SW_ERROR_NOT_THREAD_SAFETY,
 
     SW_ERROR_FILE_NOT_EXIST = 700,
     SW_ERROR_FILE_TOO_LARGE,
     SW_ERROR_FILE_EMPTY,
-    SW_ERROR_DNSLOOKUP_DUPLICATE_REQUEST,
+
+    SW_ERROR_DNSLOOKUP_DUPLICATE_REQUEST = 710,
     SW_ERROR_DNSLOOKUP_RESOLVE_FAILED,
     SW_ERROR_DNSLOOKUP_RESOLVE_TIMEOUT,
-    SW_ERROR_BAD_IPV6_ADDRESS,
+    SW_ERROR_DNSLOOKUP_UNSUPPORTED,
+    SW_ERROR_DNSLOOKUP_NO_SERVER,
+
+    SW_ERROR_BAD_IPV6_ADDRESS = 720,
     SW_ERROR_UNREGISTERED_SIGNAL,
+	SW_ERROR_BAD_HOST_ADDR,
 
     // EventLoop
     SW_ERROR_EVENT_SOCKET_REMOVED = 800,
@@ -68,10 +80,12 @@ enum swErrorCode {
     SW_ERROR_SSL_BAD_PROTOCOL,
     SW_ERROR_SSL_RESET,
     SW_ERROR_SSL_HANDSHAKE_FAILED,
+    SW_ERROR_SSL_CREATE_CONTEXT_FAILED,
 
     SW_ERROR_PACKAGE_LENGTH_TOO_LARGE = 1201,
     SW_ERROR_PACKAGE_LENGTH_NOT_FOUND,
     SW_ERROR_DATA_LENGTH_TOO_LARGE,
+    SW_ERROR_PACKAGE_MALFORMED_DATA,
 
     /**
      * task error
@@ -87,6 +101,7 @@ enum swErrorCode {
     SW_ERROR_HTTP2_STREAM_NO_HEADER,
     SW_ERROR_HTTP2_STREAM_NOT_FOUND,
     SW_ERROR_HTTP2_STREAM_IGNORE,
+    SW_ERROR_HTTP2_SEND_CONTROL_FRAME_FAILED,
 
     /**
      * AIO
@@ -119,11 +134,17 @@ enum swErrorCode {
     SW_ERROR_HTTP_INVALID_PROTOCOL,
     SW_ERROR_HTTP_PROXY_HANDSHAKE_FAILED,
     SW_ERROR_HTTP_PROXY_BAD_RESPONSE,
+    SW_ERROR_HTTP_CONFLICT_HEADER,
+    SW_ERROR_HTTP_CONTEXT_UNAVAILABLE,
+    SW_ERROR_HTTP_COOKIE_UNAVAILABLE,
 
     SW_ERROR_WEBSOCKET_BAD_CLIENT = 8501,
     SW_ERROR_WEBSOCKET_BAD_OPCODE,
     SW_ERROR_WEBSOCKET_UNCONNECTED,
     SW_ERROR_WEBSOCKET_HANDSHAKE_FAILED,
+    SW_ERROR_WEBSOCKET_PACK_FAILED,
+    SW_ERROR_WEBSOCKET_UNPACK_FAILED,
+    SW_ERROR_WEBSOCKET_INCOMPLETE_PACKET,
 
     /**
      * server global error
@@ -139,11 +160,18 @@ enum swErrorCode {
     SW_ERROR_SERVER_SEND_IN_MASTER,
     SW_ERROR_SERVER_INVALID_REQUEST,
     SW_ERROR_SERVER_CONNECT_FAIL,
+    SW_ERROR_SERVER_INVALID_COMMAND,
+    SW_ERROR_SERVER_IS_NOT_REGULAR_FILE,
+    SW_ERROR_SERVER_SEND_TO_WOKER_TIMEOUT,
+    SW_ERROR_SERVER_INVALID_CALLBACK,
+    SW_ERROR_SERVER_UNRELATED_THREAD,
 
     /**
      * Process exit timeout, forced to end.
      */
-    SW_ERROR_SERVER_WORKER_EXIT_TIMEOUT,
+    SW_ERROR_SERVER_WORKER_EXIT_TIMEOUT = 9101,
+    SW_ERROR_SERVER_WORKER_ABNORMAL_PIPE_DATA,
+    SW_ERROR_SERVER_WORKER_UNPROCESSED_DATA,
 
     /**
      * Coroutine
@@ -165,5 +193,24 @@ enum swErrorCode {
     SW_ERROR_CO_STD_THREAD_LINK_ERROR,
     SW_ERROR_CO_DISABLED_MULTI_THREAD,
 
+    SW_ERROR_CO_CANNOT_CANCEL,
+    SW_ERROR_CO_NOT_EXISTS,
+    SW_ERROR_CO_CANCELED,
+    SW_ERROR_CO_TIMEDOUT,
+
+    // close failed, there are currently other coroutines holding this socket,
+    // need to wait for the bound coroutine to return from the socket wait_event operation
+    SW_ERROR_CO_SOCKET_CLOSE_WAIT,
+
     SW_ERROR_END
 };
+
+namespace swoole {
+class Exception {
+  public:
+    int code;
+    const char *msg;
+
+    Exception(int code) throw();
+};
+}  // namespace swoole

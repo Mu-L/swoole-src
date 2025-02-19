@@ -12,8 +12,7 @@ $pm->parentFunc = function () use ($pm) {
     Co\run(function () use ($pm) {
         $port = $pm->getFreePort();
         $client = new Co\Client(SWOOLE_SOCK_TCP); //同步阻塞
-        if (!$client->connect('127.0.0.1', $port))
-        {
+        if (!$client->connect('127.0.0.1', $port)) {
             exit("connect failed\n");
         }
         $client->send('hello world');
@@ -46,5 +45,5 @@ $pm->childFirst();
 $pm->run();
 ?>
 --EXPECTF--
-[%s]	WARNING	ssl_accept: bad SSL client[127.0.0.1:%d], reason=%d, error_string=%s
+[%s]	WARNING	Socket::ssl_accept(): bad SSL client[127.0.0.1:%d], reason=%d, error_string=%s
 <h1>Stop</h1>

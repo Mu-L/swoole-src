@@ -19,6 +19,10 @@ function clear_php()
     `ps -A | grep php | grep -v phpstorm | grep -v 'run-tests' | awk '{print $1}' | xargs kill -9 > /dev/null 2>&1`;
 }
 
+function puts($msg) {
+    echo $msg."\n";
+}
+
 function top(int $pid)
 {
     static $available;
@@ -84,6 +88,11 @@ function get_one_free_port(): int
     return $port;
 }
 
+function get_constant_port(string $str, int $base = 9500): int
+{
+    return $base + crc32($str) % 10000;
+}
+
 function get_one_free_port_ipv6(): int
 {
     $hookFlags = Swoole\Runtime::getHookFlags();
@@ -144,10 +153,18 @@ function array_random(array $array)
 
 function phpt_echo(...$args)
 {
+    if (!SWOOLE_TEST_ECHO) {
+        return;
+    }
     global $argv;
     if (substr($argv[0], -5) === '.phpt') {
         foreach ($args as $arg) {
-            echo $arg;
+            if (!is_string($arg)) {
+                var_export($arg);
+                echo PHP_EOL;
+            } else {
+                echo $arg;
+            }
         }
     }
 }
@@ -157,6 +174,15 @@ function phpt_var_dump(...$args)
     global $argv;
     if (substr($argv[0], -5) === '.phpt') {
         var_dump(...$args);
+    }
+}
+
+function phpt_show_usage()
+{
+    global $argv;
+    if (substr($argv[0], -5) === '.phpt') {
+        var_dump('memory:' . memory_get_usage());
+        var_dump('coroutine:' . var_export(Co::stats(), 1));
     }
 }
 
@@ -359,7 +385,7 @@ function get_big_random(int $length = 1024 * 1024)
     return str_repeat(get_safe_random(1024), $length / 1024);
 }
 
-function makeCoTcpClient($host, $port, callable $onConnect = null, callable $onReceive = null)
+function makeCoTcpClient($host, $port, ?callable $onConnect = null, ?callable $onReceive = null)
 {
     go(function () use ($host, $port, $onConnect, $onReceive) {
         $cli = new Swoole\Coroutine\Client(SWOOLE_SOCK_TCP);
@@ -436,9 +462,9 @@ function killself_in_syncmode($lifetime = 1000, $sig = SIGKILL)
  * @param callable $cb
  * @return mixed
  */
-function suicide($lifetime, $sig = SIGKILL, callable $cb = null)
+function suicide($lifetime, $sig = SIGKILL, ?callable $cb = null)
 {
-    return swoole_timer_after($lifetime, function () use ($lifetime, $sig, $cb) {
+    return Swoole\Timer::after($lifetime, function () use ($lifetime, $sig, $cb) {
         if ($cb) {
             $cb();
         }
@@ -493,8 +519,11 @@ function pstree()
     }
     $y = function ($pid, $path = []) use (&$y, $pinfo) {
         if (isset($pinfo[$pid])) {
-            list($ppid,) = $pinfo[$pid];
-            $ppid = $ppid;
+            if (isset($pinfo[$pid][0])) {
+                list($ppid,) = $pinfo[$pid];
+            } else {
+                $ppid = null;
+            }
             $path[] = $pid;
             return $y($ppid, $path);
         } else {
@@ -611,7 +640,7 @@ function start_server($file, $host, $port, $redirect_file = "/dev/null", $ext1 =
     return function () use ($handle, $redirect_file) {
         // @unlink($redirect_file);
         proc_terminate($handle, SIGTERM);
-        swoole_event_exit();
+        Swoole\Event::exit();
         exit;
     };
 }
@@ -625,7 +654,7 @@ function swoole_fork_exec(callable $fn, bool $redirect_stdin_and_stdout = false,
     return $process::wait();
 }
 
-function fork_exec(callable $fn, $f_stdout = "/dev/null", $f_stderr = null)
+function php_fork_exec(callable $fn, $f_stdout = "/dev/null", $f_stderr = null)
 {
     $pid = pcntl_fork();
     if ($pid < 0) {
@@ -642,6 +671,7 @@ function fork_exec(callable $fn, $f_stdout = "/dev/null", $f_stderr = null)
         exit;
     }
     pcntl_waitpid($pid, $status);
+    return ['pid' => $pid, 'status', $status];
 }
 
 /**
@@ -654,7 +684,7 @@ function fork_exec(callable $fn, $f_stdout = "/dev/null", $f_stderr = null)
  * @param array|null $env env
  * @return array [out, err]
  */
-function spawn_exec($cmd, $input = null, $tv_sec = null, $tv_usec = null, $cwd = null, array $env = null)
+function spawn_exec($cmd, $input = null, $tv_sec = null, $tv_usec = null, $cwd = null, ?array $env = null)
 {
     $out = $err = null;
     $winOpt = ['suppress_errors' => true, 'binary_pipes' => true];
@@ -761,4 +791,84 @@ function dump_to_file($file, $data)
         fwrite($fp, $l . "\n");
     }
     fclose($fp);
+}
+
+function curl_type_assert($ch, $resource_type, $class_type)
+{
+    if (PHP_VERSION_ID >= 80000) {
+        Assert::isInstanceOf($ch, $class_type);
+    } else {
+        Assert::eq(get_resource_type($ch), $resource_type);
+    }
+}
+
+function swoole_get_variance($avg, $array, $is_swatch = false)
+{
+    $count = count($array);
+    if ($count == 1 && $is_swatch == true) {
+        return false;
+    } elseif ($count > 0) {
+        $total_var = 0;
+        foreach ($array as $lv) {
+            $total_var += pow(($lv - $avg), 2);
+        }
+        if ($count == 1 && $is_swatch == true) {
+            return false;
+        }
+        return $is_swatch ? sqrt($total_var / (count($array) - 1)) : sqrt($total_var / count($array));
+    } else {
+        return false;
+    }
+}
+
+function swoole_get_average($array)
+{
+    return array_sum($array) / count($array);
+}
+
+function assert_server_stats($stats) {
+    Assert::keyExists($stats, 'connection_num');
+    Assert::keyExists($stats, 'request_count');
+}
+
+function assert_upload_file($file, $tmp_name, $name, $type, $size, $error = 0)
+{
+    Assert::notEmpty($file);
+    Assert::eq($file['tmp_name'], $tmp_name);
+    Assert::eq($file['name'], $name);
+    Assert::eq($file['type'], $type);
+    Assert::eq($file['size'], $size);
+    Assert::eq($file['error'], $error);
+}
+
+function swoole_loop_n($n, $fn)
+{
+    for ($i = 0; $i < $n; $i++) {
+        $fn($i);
+    }
+}
+
+function swoole_loop($fn)
+{
+    $i = 0;
+    while (true) {
+        $fn($i++);
+    }
+}
+
+function build_ftp_url(string $path = ''): string
+{
+    return 'ftp://' . FTP_USER . ':' . FTP_PASS . '@' . FTP_HOST . ':' .  FTP_PORT . '/' . $path;
+}
+
+function get_thread_name(): string
+{
+    return trim(file_get_contents('/proc/' . posix_getpid() . '/task/' . \Swoole\Thread::getNativeId() . '/comm'));
+}
+
+function mkdir_if_not_exists(string $string): void
+{
+    if (!is_dir($string)) {
+        mkdir($string, 0777, true);
+    }
 }

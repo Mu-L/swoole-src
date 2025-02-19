@@ -13,7 +13,7 @@
   | @link     https://www.swoole.com/                                    |
   | @contact  team@swoole.com                                            |
   | @license  https://github.com/swoole/swoole-src/blob/master/LICENSE   |
-  | @author   Tianfeng Han  <mikan.tenny@gmail.com>                      |
+  | @Author   Tianfeng Han  <rango@swoole.com>                           |
   +----------------------------------------------------------------------+
 */
 
@@ -27,18 +27,24 @@ TEST(global_memory, alloc) {
     pool->free(ptr1);
     strcpy(ptr1, "hello, world, #1");
 
-    char *ptr2 = (char *) pool->alloc(12);
+    char *ptr2 = (char *) pool->alloc(17);
     strcpy(ptr2, "hello, world, #2");
-    char *ptr3 = (char *) pool->alloc(198);
+    pool->free(ptr2);
+
+    char *ptr3 = (char *) pool->alloc(113);
     strcpy(ptr3, "hello, world, #3");
 
     ASSERT_TRUE(ptr1);
     ASSERT_TRUE(ptr2);
     ASSERT_TRUE(ptr3);
 
-    delete pool;
+    ASSERT_GT(pool->capacity(), 2 * 1024 * 1024 - 512);
+    ASSERT_GT(pool->get_memory_size(), 0);
 
     ASSERT_STREQ(ptr1, "hello, world, #1");
     ASSERT_STREQ(ptr2, "hello, world, #2");
     ASSERT_STREQ(ptr3, "hello, world, #3");
+
+    pool->destroy();
+    delete pool;
 }

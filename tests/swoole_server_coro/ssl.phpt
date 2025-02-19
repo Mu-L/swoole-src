@@ -12,9 +12,8 @@ use Swoole\Coroutine\Server\Connection;
 $pm = new ProcessManager;
 
 $pm->parentFunc = function ($pid) use ($pm) {
-    $client = new swoole_client(SWOOLE_SOCK_TCP | SWOOLE_SSL, SWOOLE_SOCK_SYNC); //同步阻塞
-    if (!$client->connect('127.0.0.1', $pm->getFreePort()))
-    {
+    $client = new Swoole\Client(SWOOLE_SOCK_TCP | SWOOLE_SSL, SWOOLE_SOCK_SYNC); //同步阻塞
+    if (!$client->connect('127.0.0.1', $pm->getFreePort())) {
         exit("connect failed\n");
     }
     $client->send("hello world");
@@ -27,8 +26,8 @@ $pm->childFunc = function () use ($pm) {
         $server = new Server('0.0.0.0', $pm->getFreePort(), true);
         $server->set([
             'log_file' => '/dev/null',
-            'ssl_cert_file' => dirname(__DIR__) . '/include/api/swoole_http_server/localhost-ssl/server.crt',
-            'ssl_key_file' => dirname(__DIR__) . '/include/api/swoole_http_server/localhost-ssl/server.key',
+            'ssl_cert_file' => SSL_FILE_DIR.'/server.crt',
+            'ssl_key_file' => SSL_FILE_DIR.'/server.key',
         ]);
         $server->handle(function (Connection $conn) use ($server) {
             $data = $conn->recv();
@@ -38,7 +37,7 @@ $pm->childFunc = function () use ($pm) {
         $pm->wakeup();
         $server->start();
     });
-    swoole_event::wait();
+    Swoole\Event::wait();
 };
 
 $pm->childFirst();

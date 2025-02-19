@@ -13,7 +13,7 @@
  | to obtain it through the world-wide-web, please send a note to       |
  | license@swoole.com so we can mail you a copy immediately.            |
  +----------------------------------------------------------------------+
- | Author: Tianfeng Han  <mikan.tenny@gmail.com>                        |
+ | Author: Tianfeng Han  <rango@swoole.com>                             |
  +----------------------------------------------------------------------+
  */
 abstract class TestServer
@@ -37,7 +37,7 @@ abstract class TestServer
     function __construct(int $port, bool $base = false)
     {
         $mode = $base ? SWOOLE_BASE : SWOOLE_PROCESS;
-        $serv = new swoole_server('127.0.0.1', $port, $mode);
+        $serv = new Swoole\Server('127.0.0.1', $port, $mode);
         $serv->on('Connect', [$this, 'onConnect']);
         $serv->on('receive', [$this, '_receive']);
         $serv->on('workerStart', [$this, 'onWorkerStart']);

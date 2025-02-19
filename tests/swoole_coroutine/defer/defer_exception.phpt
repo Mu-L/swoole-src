@@ -19,7 +19,7 @@ go(function () {
         defer(function () use ($foo, &$bar) {
             echo "defer 2\n";
             Assert::same($foo, 2);
-            Assert::assert($foo !== 'gua'); // because of &
+            Assert::assert($bar !== 'gua'); // because of &
         });
         $foo = 3;
         $bar = 'zha';
@@ -28,15 +28,15 @@ go(function () {
         echo "never here\n";
     });
 });
-swoole_event_wait();
+Swoole\Event::wait();
 ?>
 --EXPECTF--
 3
 zha
-defer 2
-defer 1
 
 Fatal error: Uncaught Exception: something wrong in %s:%d
 Stack trace:
-#0 {main}
+%A
   thrown in %s/tests/swoole_coroutine/defer/defer_exception.php on line %d
+defer 2
+defer 1

@@ -1,0 +1,122 @@
+name: Framework Tests
+
+on:
+  push:
+  pull_request:
+
+env:
+  CPPFLAGS: "-I/opt/homebrew/opt/pcre2/include/"
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '--filter=') || contains(github.event.head_commit.message, '[framework]')"
+    strategy:
+      fail-fast: false
+      matrix:
+        php-version: [ '8.1', '8.2', '8.3' ]
+        framework: [ 'Laravel Octane', 'Hyperf', 'Simps' ]
+    name: ${{ matrix.framework }} - PHP ${{ matrix.php-version }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php-version }}
+          extensions: dom, curl, libxml, mbstring, zip, redis, pdo, pdo_mysql, bcmath
+          tools: phpize, composer:v2
+          ini-values: extension=swoole
+          coverage: none
+
+      - name: Build Swoole
+        run: |
+          sudo apt update -y && sudo apt install -y libcurl4-openssl-dev php-curl libc-ares-dev libpq-dev valgrind
+          phpize
+          ./configure --enable-openssl --enable-mysqlnd --enable-swoole-curl --enable-cares --enable-swoole-pgsql
+          make -j$(nproc)
+          sudo make install
+          php -v
+          php -m
+          php --ini
+          php --ri swoole
+
+      - name: Laravel Octane Tests
+        if: matrix.framework == 'Laravel Octane' && matrix.php-version != '8.3'
+        run: |
+          git clone https://github.com/laravel/octane.git --depth=1
+          cd octane/
+          composer update --prefer-dist --no-interaction --no-progress
+          vendor/bin/phpunit
+
+      - name: Hyperf Tests
+        if: matrix.framework == 'Hyperf' && matrix.php-version != '8.3'
+        env:
+          SW_VERSION: 'master'
+          MYSQL_VERSION: '5.7'
+          PGSQL_VERSION: '14'
+        run: |
+          git clone https://github.com/hyperf/hyperf.git --depth=1
+          cd hyperf/
+          composer update -o
+          ./.travis/requirement.install.sh
+          ./.travis/setup.services.sh
+          export TRAVIS_BUILD_DIR=$(pwd) && bash ./.travis/setup.mysql.sh
+          export TRAVIS_BUILD_DIR=$(pwd) && bash ./.travis/setup.pgsql.sh
+          cp .travis/.env.example .env
+          export SWOOLE_BRANCH=${GITHUB_REF##*/}
+          if [ "${SWOOLE_BRANCH}" = "valgrind" ]; then
+            USE_ZEND_ALLOC=0 valgrind php -dswoole.use_shortname='Off' bin/co-phpunit --exclude-group NonCoroutine
+            USE_ZEND_ALLOC=0 valgrind php -dswoole.use_shortname='Off' vendor/bin/phpunit --group NonCoroutine
+            USE_ZEND_ALLOC=0 valgrind php -dswoole.use_shortname='Off' vendor/bin/phpunit src/filesystem --group NonCoroutine
+          else
+            .travis/run.test.sh
+          fi
+
+      - name: Simps Tests
+        if: matrix.framework == 'Simps'
+        run: |
+          git clone https://github.com/simps/mqtt.git --depth=1
+          cd mqtt/
+          composer install -o
+          composer test
+
+  macos:
+    if: "!contains(github.event.head_commit.message, '--filter=') || contains(github.event.head_commit.message, '[framework]')"
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php-version: [ '8.1', '8.2', '8.3' ]
+        framework: [ 'Simps' ]
+    name: ${{ matrix.framework }} - PHP ${{ matrix.php-version }} - macOS
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php-version }}
+          extensions: dom, curl, libxml, mbstring, zip, redis, pdo, pdo_mysql, bcmath
+          tools: phpize, composer:v2
+          ini-values: extension=swoole
+          coverage: none
+
+      - name: Build Swoole
+        run: |
+          phpize
+          ./configure CPPFLAGS="${CPPFLAGS}" --enable-openssl --enable-mysqlnd --enable-swoole-curl --enable-cares
+          make -j$(sysctl -n hw.ncpu)
+          sudo make install
+          php --ri swoole
+
+      - name: Simps Tests
+        if: matrix.framework == 'Simps'
+        run: |
+          git clone https://github.com/simps/mqtt.git --depth=1
+          cd mqtt/
+          composer install -o
+          composer test
+

@@ -13,7 +13,7 @@ use Swoole\Server;
 
 $pm = new SwooleTest\ProcessManager;
 $pm->parentFunc = function ($pid) use ($pm) {
-    $client = new swoole_client(SWOOLE_SOCK_TCP, SWOOLE_SOCK_SYNC);
+    $client = new Swoole\Client(SWOOLE_SOCK_TCP, SWOOLE_SOCK_SYNC);
     if (!$client->connect('127.0.0.1', $pm->getFreePort(), 0.5, 0)) {
         echo "Over flow. errno=" . $client->errCode;
         die("\n");
@@ -44,14 +44,14 @@ $pm->parentFunc = function ($pid) use ($pm) {
 };
 
 $pm->childFunc = function () use ($pm) {
-    $serv = new Server('127.0.0.1', $pm->getFreePort(), SWOOLE_BASE);
+    $serv = new Server('127.0.0.1', $pm->getFreePort(), SWOOLE_PROCESS);
     $serv->set(array(
         'package_eof' => "\r\n\r\n",
         'open_eof_check' => true,
         'open_eof_split' => true,
-        'dispatch_mode' => 3,
+        'dispatch_mode' => 7,
         'package_max_length' => 1024 * 1024 * 2, //2M
-        "worker_num" => 1,
+        'worker_num' => 1,
         'log_file' => '/dev/null',
         "reload_async" => true,
     ));

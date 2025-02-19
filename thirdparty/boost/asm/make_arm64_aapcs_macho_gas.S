@@ -1,3 +1,9 @@
+/*
+            Copyright Edward Nevill + Oliver Kowalke 2015
+   Distributed under the Boost Software License, Version 1.0.
+      (See accompanying file LICENSE_1_0.txt or copy at
+          http://www.boost.org/LICENSE_1_0.txt)
+*/
 /*******************************************************
  *                                                     *
  *  -------------------------------------------------  *
@@ -45,28 +51,22 @@
  *                                                     *
  *******************************************************/
 
-
 .text
-.globl _make_fcontext
+.globl _swoole_make_fcontext
 .balign 16
 
-_make_fcontext:
+_swoole_make_fcontext:
     ; shift address in x0 (allocated stack) to lower 16 byte boundary
     and x0, x0, ~0xF
 
     ; reserve space for context-data on context-stack
     sub  x0, x0, #0xb0
 
-    ; third arg of make_fcontext() == address of context-function
+    ; third arg of swoole_make_fcontext() == address of context-function
     ; store address as a PC to jump in
     str  x2, [x0, #0xa0]
 
-    ; compute abs address of label finish
-    ; 0x0c = 3 instructions * size (4) before label 'finish'
-
-    ; TODO: Numeric offset since llvm still does not support labels in ADR. Fix:
-    ;       http://lists.cs.uiuc.edu/pipermail/llvm-commits/Week-of-Mon-20140407/212336.html
-    adr  x1, 0x0c
+    adr  x1, finish
 
     ; save address of finish as return-address for context-function
     ; will be entered after context-function returns (LR register)

@@ -12,7 +12,7 @@ use Swoole\Event;
 use Swoole\Server;
 
 $pm = new SwooleTest\ProcessManager;
-$counter = new swoole_atomic();
+$counter = new Swoole\Atomic();
 
 $pm->parentFunc = function ($pid) use ($pm) {
     go(function () use ($pm) {
@@ -43,12 +43,12 @@ $pm->parentFunc = function ($pid) use ($pm) {
 
     global $counter;
     Assert::assert($counter->get() > 10);
-    swoole_process::kill($pid);
+    Swoole\Process::kill($pid);
 };
 
 $pm->childFunc = function () use ($pm)
 {
-    $serv = new Server('127.0.0.1', $pm->getFreePort());
+    $serv = new Server('127.0.0.1', $pm->getFreePort(), SWOOLE_PROCESS);
     $serv->set([
         "worker_num" => 4,
         'dispatch_mode' => 1,

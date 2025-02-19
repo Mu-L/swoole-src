@@ -12,7 +12,7 @@
  | to obtain it through the world-wide-web, please send a note to       |
  | license@swoole.com so we can mail you a copy immediately.            |
  +----------------------------------------------------------------------+
- | Author: Tianfeng Han  <mikan.tenny@gmail.com>                        |
+ | Author: Tianfeng Han  <rango@swoole.com>                             |
  +----------------------------------------------------------------------+
  */
 #pragma once
@@ -24,7 +24,14 @@
 #define SW_MQTT_MAX_LENGTH_SIZE 4
 #define SW_MQTT_MAX_PAYLOAD_SIZE 268435455
 
-enum swMqtt_opcode {
+#define SW_MQTT_SETRETAIN(HDR, R) (HDR | (R))
+#define SW_MQTT_SETQOS(HDR, Q) (HDR | ((Q) << 1))
+#define SW_MQTT_SETDUP(HDR, D) (HDR | ((D) << 3))
+
+namespace swoole {
+namespace mqtt {
+
+enum Opcode {
     SW_MQTT_CONNECT = 0x10,
     SW_MQTT_CONNACK = 0x20,
     SW_MQTT_PUBLISH = 0x30,
@@ -41,7 +48,7 @@ enum swMqtt_opcode {
     SW_MQTT_DISCONNECT = 0xE0,
 };
 
-struct swMqtt_packet {
+struct Packet {
     uint8_t type : 4;
     uint8_t dup : 1;
     uint8_t qos : 2;
@@ -50,9 +57,7 @@ struct swMqtt_packet {
     char protocol_name[8];
 };
 
-#define SETRETAIN(HDR, R) (HDR | (R))
-#define SETQOS(HDR, Q) (HDR | ((Q) << 1))
-#define SETDUP(HDR, D) (HDR | ((D) << 3))
-
-ssize_t swMqtt_get_package_length(swProtocol *protocol, swSocket *conn, const char *data, uint32_t size);
-void swMqtt_set_protocol(swProtocol *protocol);
+ssize_t get_package_length(const Protocol *protocol, network::Socket *conn, PacketLength *pl);
+void set_protocol(Protocol *protocol);
+}  // namespace mqtt
+}  // namespace swoole

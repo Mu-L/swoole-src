@@ -10,21 +10,17 @@
   | to obtain it through the world-wide-web, please send a note to       |
   | license@swoole.com so we can mail you a copy immediately.            |
   +----------------------------------------------------------------------+
-  | Author: Tianfeng Han  <mikan.tenny@gmail.com>                        |
+  | Author: Tianfeng Han  <rango@swoole.com>                             |
   +----------------------------------------------------------------------+
 */
 
 #include "swoole_api.h"
-#include "swoole_socket.h"
 #include "swoole_reactor.h"
 #include "swoole_client.h"
-#include "swoole_async.h"
-#include "swoole_coroutine_c_api.h"
 #include "swoole_coroutine_socket.h"
 #include "swoole_coroutine_system.h"
 
 #include <mutex>
-#include <thread>
 
 using namespace swoole;
 
@@ -66,6 +62,17 @@ int swoole_event_add(Socket *socket, int events) {
     return SwooleTG.reactor->add(socket, events);
 }
 
+int swoole_event_add_or_update(swoole::network::Socket *_socket, int event) {
+    if (event == SW_EVENT_READ) {
+        return SwooleTG.reactor->add_read_event(_socket);
+    } else if (event == SW_EVENT_WRITE) {
+        return SwooleTG.reactor->add_write_event(_socket);
+    } else {
+        assert(0);
+        return SW_ERR;
+    }
+}
+
 int swoole_event_set(Socket *socket, int events) {
     return SwooleTG.reactor->set(socket, events);
 }
@@ -78,7 +85,7 @@ int swoole_event_wait() {
     Reactor *reactor = SwooleTG.reactor;
     int retval = 0;
     if (!reactor->wait_exit or !reactor->if_exit()) {
-        retval = SwooleTG.reactor->wait(nullptr);
+        retval = reactor->wait(nullptr);
     }
     swoole_event_free();
     return retval;
@@ -97,11 +104,12 @@ void swoole_event_defer(Callback cb, void *private_data) {
     SwooleTG.reactor->defer(cb, private_data);
 }
 
-/**
- * @return SW_OK or SW_ERR
- */
 ssize_t swoole_event_write(Socket *socket, const void *data, size_t len) {
     return SwooleTG.reactor->write(SwooleTG.reactor, socket, data, len);
+}
+
+ssize_t swoole_event_writev(swoole::network::Socket *socket, const iovec *iov, size_t iovcnt) {
+    return SwooleTG.reactor->writev(SwooleTG.reactor, socket, iov, iovcnt);
 }
 
 bool swoole_event_set_handler(int fdtype, ReactorHandler handler) {
@@ -114,4 +122,12 @@ bool swoole_event_isset_handler(int fdtype) {
 
 bool swoole_event_is_available() {
     return SwooleTG.reactor and !SwooleTG.reactor->destroyed;
+}
+
+bool swoole_event_is_running() {
+    return SwooleTG.reactor and SwooleTG.reactor->running;
+}
+
+Socket *swoole_event_get_socket(int fd) {
+    return SwooleTG.reactor->get_socket(fd);
 }

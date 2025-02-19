@@ -1,20 +1,33 @@
 PROJECT(libswoole)
+cmake_minimum_required(VERSION 2.8.12)
 
 ENABLE_LANGUAGE(ASM)
-SET(SWOOLE_VERSION 4.6.0-alpha)
+set(SWOOLE_VERSION 6.0.2-dev)
 
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -Wall -g")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall")
-CMAKE_MINIMUM_REQUIRED(VERSION 2.8)
+
+file(READ ./config.h SWOOLE_CONFIG_FILE)
 
 set(CMAKE_MACOSX_RPATH 1)
 set(SWOOLE_LINK_LIBRARIES pthread dl)
 
 if (APPLE)
     set(CMAKE_SHARED_LINKER_FLAGS "-undefined dynamic_lookup")
+    include_directories(BEFORE /usr/local/include)
+    link_directories(BEFORE /usr/local/lib)
 else()
     list(APPEND SWOOLE_LINK_LIBRARIES rt crypt)
+endif()
+
+if (UNIX AND NOT APPLE)
+    find_library(URING_LIBRARIES uring)
+    if (URING_LIBRARIES)
+        list(APPEND SWOOLE_LINK_LIBRARIES ${URING_LIBRARIES})
+    else()
+        message(WARNING "liburing not found.")
+    endif()
 endif()
 
 SET(CMAKE_BUILD_TYPE Debug)
@@ -40,11 +53,14 @@ endif(CODE_COVERAGE)
 
 file(GLOB_RECURSE SRC_LIST FOLLOW_SYMLINKS src/*.c src/*.cc
             thirdparty/boost/asm/combined.S
+            thirdparty/hiredis/alloc.c
             thirdparty/hiredis/async.c
             thirdparty/hiredis/hiredis.c
             thirdparty/hiredis/net.c
             thirdparty/hiredis/read.c
             thirdparty/hiredis/sds.c
+            thirdparty/swoole_http_parser.c
+        	thirdparty/multipart_parser.c
 )
 file(GLOB_RECURSE HEAD_FILES FOLLOW_SYMLINKS include/*.h)
 file(GLOB_RECURSE HEAD_WAPPER_FILES FOLLOW_SYMLINKS include/wrapper/*.hpp)
@@ -59,7 +75,7 @@ add_definitions(-DHAVE_CONFIG_H)
 # test
 #add_definitions(-DSW_USE_THREAD_CONTEXT)
 
-include_directories(BEFORE ./include ./include/wrapper ext-src/ ./)
+include_directories(BEFORE ./include ./include/wrapper ext-src/ thirdparty/ ./)
 SET(EXECUTABLE_OUTPUT_PATH ${PROJECT_BINARY_DIR}/bin)
 
 # find OpenSSL
@@ -80,6 +96,22 @@ endif()
 if (DEFINED brotli_dir)
     include_directories(BEFORE ${brotli_dir}/include)
     link_directories(${brotli_dir}/lib)
+endif()
+
+foreach (LINE ${SWOOLE_CONFIG_FILE})
+  if ("${LINE}" MATCHES "define SW_USE_CARES 1")
+      message(STATUS "enable c-ares")
+      list(APPEND SWOOLE_LINK_LIBRARIES cares)
+  endif()
+endforeach()
+
+if (DEFINED enable_trace_log)
+	add_definitions(-DSW_LOG_TRACE_OPEN)
+endif()
+
+if (DEFINED enable_asan)
+	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address -fno-omit-frame-pointer")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fsanitize=address -fno-omit-frame-pointer")
 endif()
 
 execute_process(COMMAND php-config --includes OUTPUT_VARIABLE PHP_INCLUDES OUTPUT_STRIP_TRAILING_WHITESPACE)
@@ -104,7 +136,8 @@ link_directories(${LIBRARY_OUTPUT_PATH})
 add_library(lib-swoole SHARED ${SRC_LIST})
 set_target_properties(lib-swoole PROPERTIES OUTPUT_NAME "swoole" VERSION ${SWOOLE_VERSION})
 target_link_libraries(lib-swoole ${SWOOLE_LINK_LIBRARIES})
-if(CODE_COVERAGE)
+
+if (CODE_COVERAGE)
     target_link_libraries(lib-swoole coverage_config gcov)
 endif(CODE_COVERAGE)
 
@@ -123,13 +156,13 @@ target_link_libraries(co swoole)
 # ext-swoole
 file(GLOB ext_cxx_files ext-src/*.cc)
 set(ext_src_list  ${ext_cxx_files}
+        thirdparty/php/curl/interface.cc
+        thirdparty/php/curl/multi.cc
         thirdparty/php/sockets/multicast.cc
         thirdparty/php/sockets/sendrecvmsg.cc
         thirdparty/php/sockets/conversions.cc
         thirdparty/php/sockets/sockaddr_conv.cc
         thirdparty/php/standard/proc_open.cc
-        thirdparty/swoole_http_parser.c
-        thirdparty/multipart_parser.c
         thirdparty/nghttp2/nghttp2_hd.c
         thirdparty/nghttp2/nghttp2_rcbuf.c
         thirdparty/nghttp2/nghttp2_helper.c
@@ -143,10 +176,22 @@ set_target_properties(ext-swoole PROPERTIES PREFIX "")
 set_target_properties(ext-swoole PROPERTIES OUTPUT_NAME "swoole")
 add_dependencies(ext-swoole lib-swoole)
 
-target_link_libraries(ext-swoole swoole)
+if (DEFINED enable_thread)
+    add_definitions(-DSW_THREAD)
+endif()
 
-#install
-INSTALL(CODE "MESSAGE(\"Are you run command using root user?\")")
+# find libpq
+if (DEFINED libpq_dir)
+    target_include_directories(ext-swoole BEFORE ${LIBPQ_INCLUDE_DIRS})
+else()
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(LIBPQ REQUIRED libpq)
+    target_include_directories(ext-swoole PRIVATE ${LIBPQ_INCLUDE_DIRS})
+endif()
+
+target_link_libraries(ext-swoole swoole pq)
+
+# install
 INSTALL(TARGETS ext-swoole LIBRARY DESTINATION ${PHP_EXTENSION_DIR})
 INSTALL(TARGETS lib-swoole LIBRARY DESTINATION lib ARCHIVE DESTINATION lib)
 INSTALL(FILES ${HEAD_FILES} DESTINATION include/swoole)

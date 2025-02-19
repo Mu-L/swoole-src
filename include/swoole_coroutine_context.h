@@ -10,7 +10,7 @@
   | to obtain it through the world-wide-web, please send a note to       |
   | license@swoole.com so we can mail you a copy immediately.            |
   +----------------------------------------------------------------------+
-  | Author: Tianfeng Han  <mikan.tenny@gmail.com>                        |
+  | Author: Tianfeng Han  <rango@swoole.com>                             |
   |         Twosee  <twose@qq.com>                                       |
   +----------------------------------------------------------------------+
 */
@@ -24,6 +24,9 @@
 #include <mutex>
 #elif !defined(SW_USE_ASM_CONTEXT)
 #define USE_UCONTEXT 1
+#ifndef _XOPEN_SOURCE
+#define _XOPEN_SOURCE
+#endif
 #include <ucontext.h>
 #else
 #define USE_ASM_CONTEXT 1
@@ -39,29 +42,42 @@
 typedef ucontext_t coroutine_context_t;
 #elif defined(USE_ASM_CONTEXT)
 typedef fcontext_t coroutine_context_t;
+typedef transfer_t coroutine_transfer_t;
 #endif
 
-typedef std::function<void(void *)> coroutine_func_t;
+#if defined(USE_UCONTEXT) || defined(SW_USE_THREAD_CONTEXT)
+typedef void * coroutine_transfer_t;
+#endif
+
+typedef std::function<void(void *)> CoroutineFunc;
 
 namespace swoole {
 namespace coroutine {
 
 class Context {
   public:
-    Context(size_t stack_size, const coroutine_func_t &fn, void *private_data);
+    Context(size_t stack_size, CoroutineFunc fn, void *private_data);
     ~Context();
     bool swap_in();
     bool swap_out();
 #if !defined(SW_USE_THREAD_CONTEXT) && defined(SW_CONTEXT_DETECT_STACK_USAGE)
     ssize_t get_stack_usage();
 #endif
-    inline bool is_end() {
+#ifndef SW_USE_THREAD_CONTEXT
+    char *get_stack() const {
+        return stack_;
+    }
+
+    size_t get_stack_size() const {
+        return stack_size_;
+    }
+#endif
+    bool is_end() const {
         return end_;
     }
-    static void context_func(void *arg);
 
   protected:
-    coroutine_func_t fn_;
+    CoroutineFunc fn_;
 #ifdef SW_USE_THREAD_CONTEXT
     std::thread thread_;
     std::mutex lock_;
@@ -77,6 +93,8 @@ class Context {
 #endif
     void *private_data_;
     bool end_;
+
+    static void context_func(coroutine_transfer_t arg);
 };
 
 }  // namespace coroutine

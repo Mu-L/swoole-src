@@ -10,13 +10,11 @@
   | to obtain it through the world-wide-web, please send a note to       |
   | license@swoole.com so we can mail you a copy immediately.            |
   +----------------------------------------------------------------------+
-  | Author: Tianfeng Han  <mikan.tenny@gmail.com>                        |
+  | Author: Tianfeng Han  <rango@swoole.com>                             |
   +----------------------------------------------------------------------+
 */
 
 #include "swoole_coroutine_channel.h"
-
-#include <unordered_map>
 
 namespace swoole {
 namespace coroutine {
@@ -33,21 +31,31 @@ void Channel::timer_callback(Timer *timer, TimerNode *tnode) {
     msg->co->resume();
 }
 
-void Channel::yield(enum opcode type) {
+void Channel::yield(enum Opcode type) {
     Coroutine *co = Coroutine::get_current_safe();
     if (type == PRODUCER) {
         producer_queue.push_back(co);
-        swTraceLog(SW_TRACE_CHANNEL, "producer cid=%ld", co->get_cid());
+        swoole_trace_log(SW_TRACE_CHANNEL, "producer cid=%ld", co->get_cid());
     } else {
         consumer_queue.push_back(co);
-        swTraceLog(SW_TRACE_CHANNEL, "consumer cid=%ld", co->get_cid());
+        swoole_trace_log(SW_TRACE_CHANNEL, "consumer cid=%ld", co->get_cid());
     }
-    co->yield();
+    Coroutine::CancelFunc cancel_fn = [this, type](Coroutine *co) {
+        if (type == CONSUMER) {
+            consumer_remove(co);
+        } else {
+            producer_remove(co);
+        }
+        co->resume();
+        return true;
+    };
+    co->yield(&cancel_fn);
 }
 
 void *Channel::pop(double timeout) {
     Coroutine *current_co = Coroutine::get_current_safe();
     if (closed && is_empty()) {
+        error_ = ERROR_CLOSED;
         return nullptr;
     }
     if (is_empty() || !consumer_queue.empty()) {
@@ -55,11 +63,10 @@ void *Channel::pop(double timeout) {
         msg.error = false;
         msg.timer = nullptr;
         if (timeout > 0) {
-            long msec = (long) (timeout * 1000);
             msg.chan = this;
             msg.type = CONSUMER;
             msg.co = current_co;
-            msg.timer = swoole_timer_add(msec, false, timer_callback, &msg);
+            msg.timer = swoole_timer_add(timeout, false, timer_callback, &msg);
         }
 
         yield(CONSUMER);
@@ -67,7 +74,16 @@ void *Channel::pop(double timeout) {
         if (msg.timer) {
             swoole_timer_del(msg.timer);
         }
-        if (msg.error || (closed && is_empty())) {
+        if (current_co->is_canceled()) {
+            error_ = ERROR_CANCELED;
+            return nullptr;
+        }
+        if (msg.error) {
+            error_ = ERROR_TIMEOUT;
+            return nullptr;
+        }
+        if (closed && is_empty()) {
+            error_ = ERROR_CLOSED;
             return nullptr;
         }
     }
@@ -89,6 +105,7 @@ void *Channel::pop(double timeout) {
 bool Channel::push(void *data, double timeout) {
     Coroutine *current_co = Coroutine::get_current_safe();
     if (closed) {
+        error_ = ERROR_CLOSED;
         return false;
     }
     if (is_full() || !producer_queue.empty()) {
@@ -96,11 +113,10 @@ bool Channel::push(void *data, double timeout) {
         msg.error = false;
         msg.timer = nullptr;
         if (timeout > 0) {
-            long msec = (long) (timeout * 1000);
             msg.chan = this;
             msg.type = PRODUCER;
             msg.co = current_co;
-            msg.timer = swoole_timer_add(msec, false, timer_callback, &msg);
+            msg.timer = swoole_timer_add(timeout, false, timer_callback, &msg);
         }
 
         yield(PRODUCER);
@@ -108,7 +124,16 @@ bool Channel::push(void *data, double timeout) {
         if (msg.timer) {
             swoole_timer_del(msg.timer);
         }
-        if (msg.error || closed) {
+        if (current_co->is_canceled()) {
+            error_ = ERROR_CANCELED;
+            return false;
+        }
+        if (msg.error) {
+            error_ = ERROR_TIMEOUT;
+            return false;
+        }
+        if (closed) {
+            error_ = ERROR_CLOSED;
             return false;
         }
     }
@@ -116,7 +141,7 @@ bool Channel::push(void *data, double timeout) {
      * push data
      */
     data_queue.push(data);
-    swTraceLog(SW_TRACE_CHANNEL, "push data to channel, count=%ld", length());
+    swoole_trace_log(SW_TRACE_CHANNEL, "push data to channel, count=%ld", length());
     /**
      * notify consumer
      */
@@ -131,7 +156,7 @@ bool Channel::close() {
     if (closed) {
         return false;
     }
-    swTraceLog(SW_TRACE_CHANNEL, "channel closed");
+    swoole_trace_log(SW_TRACE_CHANNEL, "channel closed");
     closed = true;
     while (!producer_queue.empty()) {
         Coroutine *co = pop_coroutine(PRODUCER);
